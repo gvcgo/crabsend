@@ -1,0 +1,19 @@
+node_modules/
+dist/
+target/
+
+# Generated Android project: keep the project itself, ignore build state and keys.
+src-tauri/gen/android/**/build/
+src-tauri/gen/android/.gradle/
+src-tauri/gen/android/local.properties
+src-tauri/gen/android/keystore.properties
+
+# Schema files tauri-build writes from the plugin manifests on every build.
+src-tauri/gen/schemas/
+
+# The Android build copies the native library in, as symlinks into target/.
+src-tauri/gen/android/app/src/main/jniLibs/
+
+# Packages are produced by the build, never edited by hand.
+*.apk
+*.aab

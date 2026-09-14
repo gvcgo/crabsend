@@ -1,0 +1,55 @@
+[package]
+name = "crabsend-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "LocalSend-compatible cross-platform file transfer app"
+
+[lib]
+name = "crabsend_app"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+crabsend-core = { path = "../crates/crabsend-core" }
+
+anyhow.workspace = true
+dirs.workspace = true
+futures-util.workspace = true
+mime_guess.workspace = true
+parking_lot.workspace = true
+# Only the SVG renderer: `image` would drag in the whole codec stack to draw
+# the same modules the UI scales itself.
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+serde.workspace = true
+serde_json.workspace = true
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+# Resolves the `content://` URIs the Android picker returns into real file
+# descriptors, which the rest of the application needs.
+tauri-plugin-fs = "2"
+# Only to hand a `content://` URI to that plugin as the URI it is.
+url = "2"
+# And to read the file name out of the percent-encoded document ids above.
+percent-encoding = "2"
+tauri-plugin-opener = "2"
+time.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-single-instance = "2"
+
+# Scanning a pairing code needs a camera; there is no desktop implementation of
+# the plugin, and on desktop the app is the one *displaying* the code.
+[target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
+tauri-plugin-barcode-scanner = "2"

@@ -1,0 +1,49 @@
+[workspace]
+resolver = "3"
+members = ["crates/crabsend-core", "src-tauri"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/moqsien/crabsend"
+
+[workspace.dependencies]
+anyhow = "1.0.104"
+axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio", "query"] }
+base64 = "0.23.1"
+bytes = "1.12.1"
+dirs = "7.0.0"
+futures-util = "0.3.34"
+http-body-util = "0.1.5"
+hyper = { version = "1.11.1", features = ["http1", "http2", "server"] }
+hyper-util = { version = "0.1.20", default-features = false, features = ["server", "server-auto", "service", "tokio", "http1", "http2"] }
+if-addrs = "0.15.0"
+libc = "0.2"
+mime_guess = "2.0.5"
+parking_lot = "0.12"
+rand = "0.10.2"
+rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "pem", "ring"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "stream", "rustls-no-provider", "http2", "charset"] }
+rsa = { version = "0.9.10", features = ["sha2"] }
+rustls = { version = "0.23.44", default-features = false, features = ["ring", "std", "tls12"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+sha2 = "0.11.0"
+socket2 = "0.6.5"
+tempfile = "3"
+thiserror = "2.0.20"
+time = { version = "0.3.54", features = ["formatting", "parsing"] }
+tokio = { version = "1.53.1", features = ["full"] }
+tokio-rustls = { version = "0.26.5", default-features = false, features = ["ring", "tls12"] }
+tokio-util = { version = "0.7.19", features = ["rt"] }
+tower = { version = "0.5", features = ["util"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+uuid = { version = "1.26.1", features = ["v4", "serde"] }
+x509-parser = { version = "0.18.1", features = ["verify"] }
+
+[profile.dev]
+# The webview + dev-server cycle is dominated by link time; keep deps optimized
+# so iteration stays interactive.
+opt-level = 1
