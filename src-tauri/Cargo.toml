@@ -48,8 +48,17 @@ tempfile.workspace = true
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-single-instance = "2"
+# The panel icon the application lives in while its window is out of the way.
+# A phone has no panel, so the feature — and the library behind it — is not
+# built for it at all.
+tauri = { version = "2", features = ["tray-icon"] }
 
 # Scanning a pairing code needs a camera; there is no desktop implementation of
 # the plugin, and on desktop the app is the one *displaying* the code.
 [target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
 tauri-plugin-barcode-scanner = "2"
+
+# Names the JNI environment the webview hands out, which is how a received file
+# is given to the phone's media database.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"

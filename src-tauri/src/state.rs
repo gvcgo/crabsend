@@ -80,9 +80,15 @@ pub struct Snapshot {
     pub history: Vec<HistoryEntry>,
     pub pairing: PairingSupport,
     /// Whether this platform has a file manager to show a received file in.
-    /// A phone has none: its file managers cannot even see the directory the
-    /// files are saved to, so the interface must not offer the action.
+    /// A phone has none — its file managers work through the media database,
+    /// which lists a file and not the folder it sits in — so the action is
+    /// replaced there by opening the file itself.
     pub can_reveal_files: bool,
+    /// Whether a received file can be handed to another application to open.
+    /// This is what a phone offers instead of showing the file in a file
+    /// manager, and what a desktop does not need: its file manager is already
+    /// one keystroke away.
+    pub can_open_files: bool,
     /// Whether this platform can ask the user for a directory. Android's file
     /// dialogs cannot, so the buttons that would are hidden there.
     pub can_pick_folder: bool,
@@ -237,6 +243,9 @@ pub struct TransferFile {
     pub transferred: u64,
     pub status: FileStatus,
     pub error: Option<String>,
+    /// Where a received file ended up, once it is on disk; `None` while it is
+    /// on its way and for the files this device sends.
+    pub saved_path: Option<PathBuf>,
 }
 
 #[derive(Serialize, Clone)]
@@ -406,23 +415,27 @@ impl AppState {
             .with_context(|| format!("creating {}", config_dir.display()))?;
         let settings_path = config_dir.join("settings.json");
         let mut settings = Settings::load(&settings_path).normalized();
-        if !settings_path.exists()
-            && let Some(dir) = platform_download_dir
-        {
-            settings.download_dir = dir;
-        }
-        // A settings file written while received files still landed in the
-        // application's files directory keeps pointing there — the one place
-        // Android hides from every file manager, which is why the files could
-        // not be found on the phone. Move it along with them, files included,
-        // so what was already received becomes findable too.
-        if let Some(shared) = crate::settings::android_media_dir(&settings.download_dir) {
-            let previous = settings.download_dir.clone();
-            settings.download_dir = shared;
-            if let Err(error) = settings.save(&settings_path) {
-                tracing::warn!("cannot persist the moved download directory: {error:#}");
+        let fresh = !settings_path.exists();
+        match platform_download_dir {
+            Some(dir) if fresh => settings.download_dir = dir,
+            // A settings file from an earlier version points into the phone's
+            // private storage: the files directory, which Android 11 hides from
+            // every file manager, or the media directory, which only a phone
+            // that cannot write to the public download directory needs. Received
+            // files belong in the public download directory now, so the whole
+            // download directory moves there, files included, and what was
+            // already received becomes findable too.
+            Some(dir)
+                if crate::settings::android_public_dir(&settings.download_dir).is_some()
+                    && settings.download_dir != dir =>
+            {
+                let previous = std::mem::replace(&mut settings.download_dir, dir);
+                if let Err(error) = settings.save(&settings_path) {
+                    tracing::warn!("cannot persist the moved download directory: {error:#}");
+                }
+                move_received_files(&previous, &settings.download_dir);
             }
-            move_received_files(&previous, &settings.download_dir);
+            _ => {}
         }
         let identity = load_or_create_identity(&config_dir)?;
         let paired = load_peers(&config_dir.join(PEERS_FILE));
@@ -483,6 +496,7 @@ impl AppState {
             history: self.history.lock().clone(),
             pairing: PairingSupport::current(),
             can_reveal_files: cfg!(not(any(target_os = "android", target_os = "ios"))),
+            can_open_files: cfg!(target_os = "android"),
             can_pick_folder: cfg!(not(any(target_os = "android", target_os = "ios"))),
         }
     }
@@ -508,10 +522,13 @@ impl AppState {
                 .any(|peer| peer.fingerprint == device.fingerprint);
         }
         for peer in &paired {
-            if devices
-                .iter()
-                .any(|device| device.fingerprint == peer.fingerprint)
-            {
+            // A pairing of a device that discovery has seen — or of one whose
+            // address another sighting now answers for — is not a second entry:
+            // the list offers a device once.
+            if devices.iter().any(|device| {
+                device.fingerprint == peer.fingerprint
+                    || (device.host == peer.host && device.port == peer.port)
+            }) {
                 continue;
             }
             devices.push(paired_device(peer));
@@ -713,6 +730,11 @@ impl AppState {
         };
         let state = self.clone();
         tokio::spawn(async move {
+            // Everything a peer answers from here on counts as an answer to this
+            // scan; what answers nothing is dropped from the list, which is what
+            // keeps a device that left the network, or that came back under
+            // another identity, from being offered for good.
+            let started = SystemTime::now();
             let announce = discovery.clone();
             let scan = discovery.clone();
             let refresh = state.clone();
@@ -721,7 +743,11 @@ impl AppState {
                 async move { scan.scan_subnet(&local_ipv4_addresses()).await },
                 async move { refresh.refresh_paired().await },
             );
-            tracing::info!("scan finished with {} peers", found.len());
+            let forgotten = discovery.forget_unseen(started);
+            tracing::info!(
+                "scan finished: {} peers answered, {forgotten} forgotten",
+                found.len()
+            );
             state.emit_state();
         });
     }
@@ -980,6 +1006,7 @@ impl AppState {
                     transferred: 0,
                     status: FileStatus::Pending,
                     error: None,
+                    saved_path: None,
                 })
                 .collect(),
             error: None,
@@ -1158,6 +1185,7 @@ impl AppState {
                     transferred: 0,
                     status: FileStatus::Pending,
                     error: None,
+                    saved_path: None,
                 })
                 .collect(),
             error: None,
@@ -1280,8 +1308,12 @@ impl AppState {
                 self.with_file(&session_id, &file_id, |file| {
                     file.status = FileStatus::Done;
                     file.transferred = file.size;
+                    file.saved_path = Some(path.clone());
                 });
                 tracing::info!("received {}", path.display());
+                if let Notifier::Window(app) = &self.notifier {
+                    crate::platform::publish(app, &path);
+                }
                 self.emit_state();
             }
             ServerEvent::UploadFailed {
@@ -1391,6 +1423,7 @@ impl AppState {
                         transferred: 0,
                         status: FileStatus::Pending,
                         error: None,
+                        saved_path: None,
                     })
                     .collect(),
                 error: None,
@@ -1843,16 +1876,38 @@ fn copy_then_remove(source: &Path, target: &Path) -> std::io::Result<()> {
 
 /// Where received files are written on this platform.
 ///
-/// On the desktop that is the usual downloads directory. A phone has two
-/// directories of its own, and the interface must pick the one its owner can
-/// find: the media directory is visible to file managers, the files directory
-/// next to it is not.
+/// On the desktop that is the usual downloads directory. A phone offers three
+/// directories this application can reach, and the interface must pick the one
+/// its owner can find. The public download directory is visible to every file
+/// manager, to the system Files application and over USB, and Android 11 and
+/// later let an application write there without any permission, so it comes
+/// first; where it cannot be written — older versions want a storage permission
+/// this application does not ask for — the media directory that belongs to the
+/// application is used instead, which no permission is needed for either.
 fn platform_download_dir(app: &AppHandle) -> Option<PathBuf> {
     let dir = app.path().download_dir().ok()?;
-    if let Some(shared) = crate::settings::android_media_dir(&dir) {
-        return Some(shared);
+    let Some(public) = crate::settings::android_public_dir(&dir) else {
+        return Some(dir.join("Crabsend"));
+    };
+    if writable(&public) {
+        return Some(public);
     }
-    Some(dir.join("Crabsend"))
+    crate::settings::android_media_dir(&dir)
+}
+
+/// Whether a directory can be created and written to.
+///
+/// The platform reports nothing about the public download directory on phones:
+/// the answer only shows when a file is created there, and on the versions that
+/// keep an application out of it the write is what fails.
+fn writable(dir: &Path) -> bool {
+    if std::fs::create_dir_all(dir).is_err() {
+        return false;
+    }
+    let probe = dir.join(".crabsend-probe");
+    let written = std::fs::write(&probe, []).is_ok();
+    let _ = std::fs::remove_file(&probe);
+    written
 }
 
 /// A stored pairing, as the device list shows it. The address is the one the

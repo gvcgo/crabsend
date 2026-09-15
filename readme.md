@@ -24,6 +24,10 @@ no cloud.
   and a per-device PIN can gate senders. Received files keep their folder structure and their
   original timestamps, and are verified against the SHA-256 the sender provides.
 - **History** — the last 100 transfers with peer, size, status and "open folder".
+- **Tray** — the desktop keeps an icon in the panel, so the window can be out of the way while
+  the transfer server keeps running and this device stays reachable. Its menu hides or shows the
+  window and quits; closing the window hides it there rather than taking the server down with
+  it, unless no panel could take the icon — then closing quits as it always did.
 - **Transport security** — HTTPS with a self-signed certificate; peers are identified by the
   certificate fingerprint (uppercase-hex SHA-256) and the peer's claim is only trusted when
   its own certificate proves it. Plain HTTP mode is available for compatibility.
@@ -70,7 +74,10 @@ so the flag fills those corners — without it Android's adaptive icon and the i
 to white and show a teal square floating on it.
 
 Linux needs WebKitGTK and the usual Tauri build dependencies
-(`webkit2gtk-4.1`, `libayatana-appindicator`, `librsvg`, `patchelf`).
+(`webkit2gtk-4.1`, `libayatana-appindicator`, `librsvg`, `patchelf`). The appindicator library
+is what carries the tray icon — or rather what writes it to the file a panel reads — so a
+session with no status-notifier host (a bare compositor without a bar) has nowhere to show the
+icon, and the application then behaves as if it had no tray.
 
 ### Arch Linux
 
@@ -134,19 +141,37 @@ the keystore *and* its password: an update for an installed app must be signed w
 Two platform limits are worth knowing: Android suspends the application in the background, so
 the transfer server only accepts connections while Crabsend is in the foreground; and some
 devices drop multicast traffic with the Wi-Fi radio idle, which is why the *Scan* button also
-probes every host of the local subnet.
+probes every host of the local subnet. A scan is what keeps the device list current as well: a
+peer that answers neither the announcement nor the probe is dropped, so a device that left the
+network — or that came back under another identity — stops being offered. A paired device stays
+in the list either way, since its address is a pairing rather than a sighting. A device is
+offered once, never twice: discovery keys a peer by the fingerprint its certificate proves, and
+one address is taken to hold one device, so a peer that answers there again under a new identity
+replaces what was known for that address instead of joining it in the list.
 
-Files received on a phone land in the shared directory that belongs to the application
-(`/storage/emulated/0/Android/media/dev.crabsend.app/Crabsend/`), which needs no storage
-permission and is visible to every file manager and gallery. Android 11 and later hide the
-application's *files* directory (`Android/data/…`) from file managers and from other
-applications, so a settings file that still pointed there is moved along with the files. Two
-actions a phone cannot offer are hidden there: reviewing a received file in a file manager (a
-phone has no such concept, and no way to open a file of ours from outside without a
-`FileProvider` read grant) and choosing a directory (Android's dialogs cannot pick one). Files
-picked through Android's picker come back as `content://` URIs, which the application reads into
-its cache before hashing and sending, because only the provider that issued the URI can read the
-bytes.
+Files received on a phone land in its public download directory
+(`/storage/emulated/0/Download/Crabsend/`), which the phone's Files application lists.
+Android 11 and later let an application create files there without holding a storage
+permission, which is what makes that the default; up to Android 10 the write needs a permission
+this application does not ask for, so there the files stay in the directory Android keeps for
+the application (`/storage/emulated/0/Android/media/dev.crabsend.app/Crabsend/`), which needs no
+permission either. A file an application writes by path belongs to it alone: Android keeps it
+out of every other application's view — a file manager opened at the folder shows it empty —
+and no scan ever indexes it, so galleries and a USB connection miss it too. Every finished
+transfer is therefore handed to the media scanner once the bytes are on disk
+(`MediaScannerConnection`, reached from Rust through `PlatformWebview::jni_handle`), which is
+what makes the file turn up in all of them. A settings file that still points at the private
+*files* directory (`Android/data/…`), which Android 11 hides from every file manager, or at the
+application's own directory on a phone that can write to the public one, is moved there along
+with the files. Two actions differ there: a phone cannot show a received file in a file manager —
+its file managers work through the media database, which knows files and not the folder they sit
+in — so where the desktop offers *Show in folder*, a phone offers *Open* instead. That hands the
+file to whatever application opens its type, through the content URI the media database knows it
+by, or through the file provider the application declares when the database does not, with the
+read grant the viewer needs. Choosing a directory is the action a phone has no replacement for
+(Android's dialogs cannot pick one). Files picked through Android's picker come back as
+`content://` URIs, which the application reads into its cache before hashing and sending,
+because only the provider that issued the URI can read the bytes.
 
 Only the mobile build can read a pairing code: the camera side of the barcode plugin has no
 desktop implementation, so the desktop shows codes and the phone scans them. The plugin brings

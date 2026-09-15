@@ -697,6 +697,7 @@ dependencies = [
  "crabsend-core",
  "dirs 7.0.0",
  "futures-util",
+ "jni 0.21.1",
  "mime_guess",
  "parking_lot",
  "percent-encoding",

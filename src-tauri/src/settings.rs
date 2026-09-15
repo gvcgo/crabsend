@@ -135,24 +135,53 @@ fn default_download_dir() -> PathBuf {
     base.join("Crabsend")
 }
 
-/// The shared directory that belongs to a phone application.
+/// Splits a path that is inside a phone application's own storage into the
+/// storage root and the package the directory belongs to, for both places
+/// Android gives an application: `…/Android/data/<package>/files/…` and
+/// `…/Android/media/<package>/…`.
+///
+/// Returns `None` for anything else, which is every path on the desktop.
+fn app_storage(path: &Path) -> Option<(PathBuf, String)> {
+    let text = path.to_string_lossy();
+    let (root, rest) = text
+        .split_once("/Android/data/")
+        .or_else(|| text.split_once("/Android/media/"))?;
+    if root.is_empty() {
+        return None;
+    }
+    let package = rest.split('/').find(|part| !part.is_empty())?;
+    Some((PathBuf::from(root), package.to_string()))
+}
+
+/// The phone's public download directory, `Download/Crabsend`.
+///
+/// It sits beside the directories Android keeps for an application rather than
+/// inside them, which is what makes it the one place a file manager, the system
+/// Files application and a USB connection all show. Android 11 and later let an
+/// application create files there without holding any storage permission.
+///
+/// `download_dir` is the directory the platform hands out, the application's
+/// own one; `None` comes back for a path that is not on a phone.
+pub fn android_public_dir(download_dir: &Path) -> Option<PathBuf> {
+    let (root, _) = app_storage(download_dir)?;
+    Some(root.join("Download").join("Crabsend"))
+}
+
+/// The shared directory that belongs to the application itself.
 ///
 /// Android gives an application two places of its own: the files directory
 /// (`/storage/emulated/0/Android/data/<package>/files/…`), which no file manager
 /// and no other application can see, and the media directory beside it
 /// (`/storage/emulated/0/Android/media/<package>/…`), which needs no permission
-/// either but is visible everywhere. Received files belong in the second one, so
-/// they can be found.
+/// either but is not hidden. Up to Android 10 the public download directory
+/// needs a storage permission this application does not ask for, which leaves
+/// the media directory as the only place received files can be found.
 ///
-/// Returns `None` for any path that is not inside an application's files
-/// directory, which is every path on the desktop.
+/// `None` for any path that is not on a phone, as for [`android_public_dir`].
 pub fn android_media_dir(download_dir: &Path) -> Option<PathBuf> {
-    let text = download_dir.to_string_lossy();
-    let (root, rest) = text.split_once("/Android/data/")?;
-    let package = rest.split('/').find(|part| !part.is_empty())?;
+    let (root, package) = app_storage(download_dir)?;
     Some(
-        PathBuf::from(root)
-            .join("Android")
+        root.join("Android")
             .join("media")
             .join(package)
             .join("Crabsend"),
@@ -164,10 +193,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_phones_own_directory_maps_to_the_public_download_directory() {
+        for own in [
+            "/storage/emulated/0/Android/data/dev.crabsend.app/files/Download",
+            "/storage/emulated/0/Android/data/dev.crabsend.app/files/Download/Crabsend",
+            "/storage/emulated/0/Android/media/dev.crabsend.app/Crabsend",
+        ] {
+            assert_eq!(
+                android_public_dir(Path::new(own)),
+                Some(PathBuf::from("/storage/emulated/0/Download/Crabsend")),
+                "{own}"
+            );
+        }
+        // A desktop path has no such directory, and a malformed one names none.
+        assert_eq!(
+            android_public_dir(Path::new("/home/me/Downloads/Crabsend")),
+            None
+        );
+        assert_eq!(android_public_dir(Path::new("/Android/data/")), None);
+    }
+
+    #[test]
     fn a_phones_files_directory_maps_to_its_visible_twin() {
         assert_eq!(
             android_media_dir(Path::new(
                 "/storage/emulated/0/Android/data/dev.crabsend.app/files/Download/Crabsend"
+            )),
+            Some(PathBuf::from(
+                "/storage/emulated/0/Android/media/dev.crabsend.app/Crabsend"
+            ))
+        );
+        // The mapping is stable: the media directory it produces maps to itself,
+        // which keeps a settings file that already points there where it is.
+        assert_eq!(
+            android_media_dir(Path::new(
+                "/storage/emulated/0/Android/media/dev.crabsend.app/Crabsend"
             )),
             Some(PathBuf::from(
                 "/storage/emulated/0/Android/media/dev.crabsend.app/Crabsend"

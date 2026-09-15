@@ -1,4 +1,5 @@
 <resources>
     <string name="app_name">"Crabsend"</string>
     <string name="main_activity_title">"Crabsend"</string>
+    <string name="no_application_for_file">No application on this phone can open this file.</string>
 </resources>

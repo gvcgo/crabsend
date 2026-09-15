@@ -137,6 +137,15 @@ pub fn clear_history(state: State<'_, Arc<AppState>>) {
     state.clear_history();
 }
 
+/// Opens a received file with the application the platform has for its type.
+///
+/// A phone has no file manager to show a file in, so this is the action it
+/// offers where a desktop shows the file in a folder.
+#[tauri::command]
+pub fn open_received_file(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    crate::platform::open(&app, std::path::Path::new(&path)).map_err(report)
+}
+
 /// Renders an error with its whole cause chain, which is what the user needs
 /// to see when a transfer cannot start.
 fn report(error: anyhow::Error) -> String {

@@ -95,6 +95,8 @@ export interface TransferFile {
   transferred: number;
   status: FileStatus;
   error: string | null;
+  /** Where a received file ended up; null while it is on its way and for sent files. */
+  savedPath: string | null;
 }
 
 export interface TransferPeer {
@@ -169,6 +171,8 @@ export interface Snapshot {
   pairing: PairingSupport;
   /** Whether this platform has a file manager to show a received file in. */
   canRevealFiles: boolean;
+  /** Whether a received file can be handed to an application that opens it. */
+  canOpenFiles: boolean;
   /** Whether this platform can ask the user for a directory. */
   canPickFolder: boolean;
 }

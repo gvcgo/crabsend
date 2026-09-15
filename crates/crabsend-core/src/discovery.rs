@@ -211,6 +211,17 @@ impl Discovery {
         self.state.devices.lock().clear();
     }
 
+    /// Forgets every peer that has not been seen since `since`, returning how
+    /// many entries were dropped.
+    ///
+    /// A scan is what keeps this list honest: a peer answers it by announcing
+    /// itself or by answering a probe, and one that answers neither is gone —
+    /// which is how a device that left the network, or that came back under
+    /// another identity, stops being offered.
+    pub fn forget_unseen(&self, since: SystemTime) -> usize {
+        forget_unseen(&mut self.state.devices.lock(), since)
+    }
+
     /// Registers with one host, returning the peer when it answers.
     ///
     /// HTTPS is tried first; a peer that only serves HTTP is found as well.
@@ -263,22 +274,43 @@ impl Discovery {
 
 impl State {
     /// Merges a confirmation into the device list and notifies the application.
+    ///
+    /// This device itself is never a peer, however it was learned about: a
+    /// phone whose interfaces share a subnet probes its own address, and the
+    /// registration that reaches its own server then looks like a peer nothing
+    /// else distinguishes from a real one.
     fn store(&self, device: DiscoveredDevice) {
+        if device
+            .fingerprint
+            .eq_ignore_ascii_case(&self.config.fingerprint)
+        {
+            return;
+        }
         let event = {
             let mut devices = self.devices.lock();
-            match devices
+            let event = match devices
                 .iter_mut()
                 .find(|known| known.fingerprint == device.fingerprint)
             {
                 Some(known) => {
                     *known = device.clone();
-                    DiscoveryEvent::Updated(device)
+                    DiscoveryEvent::Updated(device.clone())
                 }
                 None => {
                     devices.push(device.clone());
-                    DiscoveryEvent::Found(device)
+                    DiscoveryEvent::Found(device.clone())
                 }
-            }
+            };
+            // One address is one device: a peer that answers there again under
+            // another identity — a certificate it regenerated, a fingerprint a
+            // plain-HTTP registration only claimed — replaces what was known
+            // for that address instead of being offered beside it.
+            devices.retain(|known| {
+                known.fingerprint == device.fingerprint
+                    || known.host != device.host
+                    || known.port != device.port
+            });
+            event
         };
         let _ = self.events.send(event);
     }
@@ -352,6 +384,14 @@ impl State {
         self.store(device.clone());
         Some(device)
     }
+}
+
+/// Drops every peer that was not seen since `since`, returning how many were
+/// dropped.
+fn forget_unseen(devices: &mut Vec<DiscoveredDevice>, since: SystemTime) -> usize {
+    let known = devices.len();
+    devices.retain(|device| device.last_seen >= since);
+    known - devices.len()
 }
 
 /// Strips the brackets a user may type around an IPv6 address.
@@ -626,6 +666,56 @@ mod tests {
         let devices = state.devices.lock();
         assert_eq!(devices.len(), 1);
         assert_eq!(devices[0].host, "10.0.0.9");
+    }
+
+    #[test]
+    fn a_scan_forgets_the_peers_that_did_not_answer_it() {
+        let (state, _events) = state();
+        let scan_started = SystemTime::now();
+
+        // Seen before the scan began and silent since: gone.
+        let mut stale = device("STALE", "10.0.0.2");
+        stale.last_seen = scan_started - Duration::from_secs(30);
+        state.store(stale);
+        // Answered the scan: kept, wherever it was found — an announcement and
+        // a probe both count, since both stamp the sighting.
+        state.store(device("ANSWERED", "10.0.0.3"));
+
+        assert_eq!(forget_unseen(&mut state.devices.lock(), scan_started), 1);
+        let devices = state.devices.lock();
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].fingerprint, "ANSWERED");
+    }
+
+    #[test]
+    fn this_device_never_becomes_a_peer_of_itself() {
+        let (state, mut events) = state();
+        // A phone's interfaces share a subnet, so a scan reaches this device's
+        // own address, and the registration that comes back is its own.
+        state.store(device("SELF", "10.0.0.5"));
+        assert!(state.devices.lock().is_empty());
+        assert!(events.try_recv().is_err());
+    }
+
+    #[test]
+    fn one_address_holds_one_device() {
+        let (state, mut events) = state();
+        state.store(device("OLD", "10.0.0.2"));
+        assert!(matches!(events.try_recv(), Ok(DiscoveryEvent::Found(_))));
+
+        // The same device comes back under another identity — a certificate it
+        // regenerated, or a fingerprint a plain-HTTP answer only claimed — and
+        // the address is what says it is the same device.
+        state.store(device("NEW", "10.0.0.2"));
+        assert!(matches!(events.try_recv(), Ok(DiscoveryEvent::Found(_))));
+        let devices = state.devices.lock();
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].fingerprint, "NEW");
+
+        // Another address is another device, and keeps the first company.
+        drop(devices);
+        state.store(device("ELSEWHERE", "10.0.0.3"));
+        assert_eq!(state.devices.lock().len(), 2);
     }
 
     #[test]

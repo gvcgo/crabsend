@@ -1,4 +1,11 @@
-import { cancelSession, describeError, dismissTransfer, retryFile, revealPath } from "../api";
+import {
+  cancelSession,
+  describeError,
+  dismissTransfer,
+  openReceivedFile,
+  retryFile,
+  revealPath,
+} from "../api";
 import { button, el, iconButton } from "../dom";
 import { formatBytes, formatPercent, formatRelativeTime, isDirectoryMime, percentOf } from "../format";
 import { icon } from "../icons";
@@ -121,7 +128,15 @@ export function createTransfersView(): HTMLElement {
     }
   }
 
-  function fileRow(session: Session, file: TransferFile): HTMLLIElement {
+  async function runOpen(path: string): Promise<void> {
+    try {
+      await openReceivedFile(path);
+    } catch (error) {
+      showToast(describeError(error), "error");
+    }
+  }
+
+  function fileRow(state: Snapshot, session: Session, file: TransferFile): HTMLLIElement {
     const built = buildMeter("file-meter");
     fileMeters.set(`${session.id}::${file.id}`, built.meter);
     applyMeter(built.meter, file.transferred, file.size);
@@ -157,6 +172,26 @@ export function createTransfersView(): HTMLElement {
           icon: "refresh",
           onClick: () => {
             void runRetry(session.id, file.id);
+          },
+        }),
+      );
+    }
+
+    // A phone has no folder to show a received file in, so it opens the file
+    // itself instead.
+    if (
+      file.status === "done" &&
+      session.direction === "receive" &&
+      state.canOpenFiles &&
+      file.savedPath !== null
+    ) {
+      const path = file.savedPath;
+      row.append(
+        button("Open", {
+          class: "btn btn-ghost btn-sm",
+          icon: "openFolder",
+          onClick: () => {
+            void runOpen(path);
           },
         }),
       );
@@ -238,7 +273,7 @@ export function createTransfersView(): HTMLElement {
           )} · started ${formatRelativeTime(session.startedAt, now)}`,
         }),
         overall.root,
-        el("ul", { class: "file-list", children: session.files.map((file) => fileRow(session, file)) }),
+        el("ul", { class: "file-list", children: session.files.map((file) => fileRow(state, session, file)) }),
         session.error !== null ? el("p", { class: "session-error", text: session.error }) : null,
       ],
     });
@@ -253,7 +288,10 @@ export function createTransfersView(): HTMLElement {
           session.error ?? "",
           session.startedAt,
           session.files
-            .map((file) => `${file.id}:${file.status}:${file.transferred}:${file.error ?? ""}`)
+            .map(
+              (file) =>
+                `${file.id}:${file.status}:${file.transferred}:${file.error ?? ""}:${file.savedPath ?? ""}`,
+            )
             .join(","),
         ].join(":"),
       )

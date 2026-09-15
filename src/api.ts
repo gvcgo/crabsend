@@ -121,6 +121,11 @@ export function revealPath(path: string): Promise<void> {
   return revealItemInDir(path);
 }
 
+/** `open_received_file` — hands a received file to the platform's viewer. */
+export function openReceivedFile(path: string): Promise<void> {
+  return invoke<void>("open_received_file", { path });
+}
+
 /** `invoke` rejects with plain strings in Tauri v2; normalise anything else. */
 export function describeError(error: unknown): string {
   if (typeof error === "string") {
