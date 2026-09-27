@@ -178,6 +178,21 @@ discovery keys a peer by the fingerprint its certificate proves, and one address
 hold one device, so a peer that answers there again under a new identity replaces what was known
 for that address instead of joining it in the list.
 
+macOS 15 and later put the local network behind the user's permission, and an application that
+has not been granted it neither receives the multicast announcements nor reaches a peer on the
+LAN — silently, on *Scan* as much as anywhere else. Crabsend carries the text the system asks
+with (`src-tauri/Info.plist`, merged into the bundle), so the prompt appears the first time the
+network is needed; the grant itself lives in System Settings → Privacy & Security → Local
+Network, and it belongs to the *application*: a build started from a terminal (`cargo run`,
+`pnpm tauri dev`) is covered by the terminal's grant, not by Crabsend's. macOS records the grant
+against the code signature, so an unsigned or ad-hoc build is asked again after every rebuild —
+sign the bundle (`bundle.macOS.signingIdentity` in `tauri.conf.json`) for a dmg that is granted
+once and keeps it. Two further things stop discovery on a Mac without saying so: the firewall's
+"block all incoming connections" (announcements are no longer received, while the subnet probe
+still finds peers) and a VPN, whose tunnel is joined as well and whose routing can carry the
+probes away from the LAN. `CRABSEND_LOG=debug` is the way to see which: it prints every
+interface whose multicast group could not be joined and every announcement that failed to send.
+
 Files received on a phone land in its public download directory
 (`/storage/emulated/0/Download/Crabsend/`), which the phone's Files application lists.
 Android 11 and later let an application create files there without holding a storage

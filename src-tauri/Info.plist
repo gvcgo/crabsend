@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Keys merged into the bundle's Info.plist; see `bundle.macOS.infoPlist` in
+     tauri.conf.json. The one below is what macOS 15 and later ask the user
+     through: without it the system has nothing to prompt with, and the local
+     network — the multicast announcements and the connections to peers — is
+     refused without a word, which is a device that is never found. -->
+<plist version="1.0">
+<dict>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Crabsend finds the other devices on your network, and lets them find this one, so files can be sent straight between them. Without this access no device can be found.</string>
+</dict>
+</plist>
