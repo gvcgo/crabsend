@@ -147,24 +147,31 @@ export function createShell(): Shell {
     if (server.error !== null) {
       serverChip.className = "server-chip is-danger";
       serverChip.replaceChildren(icon("alert", 14), el("span", { text: "Server error" }));
-      bannerSlot.replaceChildren(
-        el("div", {
-          class: "banner",
-          attrs: { role: "alert" },
-          children: [icon("alert", 16), el("span", { text: `Server error: ${server.error}` })],
-        }),
-      );
     } else if (server.running) {
       serverChip.className = "server-chip is-ok";
       serverChip.replaceChildren(
         icon("server", 14),
         el("span", { text: `${server.protocol.toUpperCase()} · port ${server.port}` }),
       );
-      bannerSlot.replaceChildren();
     } else {
       serverChip.className = "server-chip is-warn";
       serverChip.replaceChildren(icon("server", 14), el("span", { text: "Server stopped" }));
+    }
+
+    // The banner belongs to whichever failure the user cannot see for himself: a
+    // server that is not running, or a system that refuses the local network,
+    // which otherwise leaves an empty device list looking like an empty network.
+    const banner = server.error !== null ? `Server error: ${server.error}` : state.localNetworkWarning;
+    if (banner === null) {
       bannerSlot.replaceChildren();
+    } else {
+      bannerSlot.replaceChildren(
+        el("div", {
+          class: "banner",
+          attrs: { role: "alert" },
+          children: [icon("alert", 16), el("span", { text: banner })],
+        }),
+      );
     }
 
     const activeSessions = state.sessions.filter((session) => isPending(session.status)).length;

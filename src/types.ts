@@ -194,6 +194,12 @@ export interface Snapshot {
   canPickFolder: boolean;
   /** Whether a folder can be picked to send the files inside it. */
   canSendFolder: boolean;
+  /**
+   * What the system is refusing this device's local network traffic, `null`
+   * while it is not. Nothing this device starts towards a peer works while that
+   * lasts, which an empty device list does not say by itself.
+   */
+  localNetworkWarning: string | null;
 }
 
 /** Payload of the `progress` event. */

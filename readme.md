@@ -106,7 +106,11 @@ scripts/build-macos.sh             # universal (x86_64 + arm64) app, bundled as 
 
 It compiles and prints the dmg — under
 `target/universal-apple-darwin/release/bundle/dmg` — and installs nothing: the frontend
-dependencies have to be in place already (`pnpm install`). A universal build needs a rustup
+dependencies have to be in place already (`pnpm install`). The app inside the dmg is signed,
+ad-hoc unless `CRABSEND_SIGNING_IDENTITY` (or `APPLE_SIGNING_IDENTITY`) names an Apple-issued
+identity, and the script mounts the dmg once to check that it is: macOS 15 and later grant an
+application the local network by code signature, which is what discovery and sending to a peer
+need (the local network note below has the details). A universal build needs a rustup
 toolchain, since the Homebrew/MacPorts rust builds the host target only and cannot add
 `aarch64-apple-darwin`; when `rustup` is not on `PATH` the script uses the private toolchain in
 `$HOME/.cache/crabsend-universal-rust` (override with `CRABSEND_RUST_SANDBOX`), and its header
@@ -178,20 +182,34 @@ discovery keys a peer by the fingerprint its certificate proves, and one address
 hold one device, so a peer that answers there again under a new identity replaces what was known
 for that address instead of joining it in the list.
 
-macOS 15 and later put the local network behind the user's permission, and an application that
-has not been granted it neither receives the multicast announcements nor reaches a peer on the
-LAN — silently, on *Scan* as much as anywhere else. Crabsend carries the text the system asks
-with (`src-tauri/Info.plist`, merged into the bundle), so the prompt appears the first time the
-network is needed; the grant itself lives in System Settings → Privacy & Security → Local
-Network, and it belongs to the *application*: a build started from a terminal (`cargo run`,
-`pnpm tauri dev`) is covered by the terminal's grant, not by Crabsend's. macOS records the grant
-against the code signature, so an unsigned or ad-hoc build is asked again after every rebuild —
-sign the bundle (`bundle.macOS.signingIdentity` in `tauri.conf.json`) for a dmg that is granted
-once and keeps it. Two further things stop discovery on a Mac without saying so: the firewall's
-"block all incoming connections" (announcements are no longer received, while the subnet probe
-still finds peers) and a VPN, whose tunnel is joined as well and whose routing can carry the
-probes away from the LAN. `CRABSEND_LOG=debug` is the way to see which: it prints every
-interface whose multicast group could not be joined and every announcement that failed to send.
+macOS 15 and later put the local network behind the user's permission, and what that permission
+covers is worth knowing exactly: traffic *to* a local address — the announcements in either
+direction, a broadcast, an outgoing connection or UDP send — needs it, while everything a peer
+starts *with* this device does not. A Mac that was not granted it therefore looks asymmetric
+from the outside: a phone can still send files to it, while it can neither find the phone nor
+send to it, and the interface reports the attempt as `No route to host` — the error a device
+that is simply switched off gives as well. Crabsend carries the text the system asks with
+(`src-tauri/Info.plist`, merged into the bundle), so the prompt appears the first time the
+network is needed, and the grant itself lives in System Settings → Privacy & Security → Local
+Network. macOS records that grant against the code signature, and a bundle it cannot track — an
+unsigned one — is refused the local network while the switch in that pane still reads as on:
+there is no way to return a program to "ask me again" (FB14944392), so the pane cannot undo it.
+`scripts/build-macos.sh` therefore signs the app inside the dmg it writes, ad-hoc unless
+`CRABSEND_SIGNING_IDENTITY` (or `APPLE_SIGNING_IDENTITY`) names an Apple-issued identity. An
+ad-hoc signature is tracked per build, so rebuilding asks for the grant again; a Developer ID is
+what makes one grant outlive the rebuilds. Crabsend says so when the system refuses: a burst
+that not one socket could send is reported in the log at `warn` and in the interface as a banner
+over the panels, because the alternative is an empty device list that reads like an empty
+network. Where the grant cannot be had — a machine rebuilding the application all day, a `cargo
+run` — the subnet can be exempted instead, which is what Apple documents these two preferences
+for: `sudo defaults write com.apple.network.local-network AllowedEthernetLocalNetworkAddresses
+-array "192.168.0.0/24"`, the same for `AllowedWiFiLocalNetworkAddresses`, and a restart. Every
+program may then use that subnet, this one included. Two further things stop discovery on a Mac
+without saying so: the firewall's "block all incoming connections" (announcements are no longer
+received, while the subnet probe still finds peers) and a VPN, whose tunnel is joined as well and
+whose routing can carry the probes away from the LAN. `CRABSEND_LOG=debug` is the way to see all
+of it: it prints every interface whose multicast group could not be joined, every announcement
+that failed to send, and every peer that did not answer a registration.
 
 Files received on a phone land in its public download directory
 (`/storage/emulated/0/Download/Crabsend/`), which the phone's Files application lists.

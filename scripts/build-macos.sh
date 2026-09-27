@@ -7,6 +7,13 @@
 # Compile only: nothing is installed and the frontend dependencies are expected to be in
 # place already (`pnpm install` is not run here; the build fails if node_modules is missing).
 #
+# The app in the dmg is signed ad-hoc unless CRABSEND_SIGNING_IDENTITY (or
+# APPLE_SIGNING_IDENTITY) names an Apple-issued identity. macOS 15 and later grant the local
+# network by code signature, and a bundle the system cannot track is refused discovery and
+# every connection to a peer without a word, so an unsigned build does not work there at all
+# (the readme's macOS section has the details). The dmg is mounted once to check that the app
+# inside it is signed.
+#
 # Prerequisites:
 #   · node + pnpm, with node_modules installed
 #   · a rustup-managed toolchain new enough for edition 2024 and able to target
@@ -96,15 +103,56 @@ fi
 
 cd "$root"
 log "building the universal bundle (x86_64 + arm64)"
+
+# macOS 15 and later grant the local network by code signature: a program whose signature
+# the system cannot track is refused the multicast announcements and every connection it
+# starts towards a peer, silently, while what a peer starts with it keeps working. An
+# unsigned bundle can be granted nothing at all, so one is signed ad-hoc here — enough to
+# be granted, but the grant has to be given again after every rebuild, because an ad-hoc
+# signature changes with the code. A Developer ID is what makes one grant stick; name one
+# in CRABSEND_SIGNING_IDENTITY (or APPLE_SIGNING_IDENTITY) to use it.
+signing="${CRABSEND_SIGNING_IDENTITY:-${APPLE_SIGNING_IDENTITY:-}}"
+if [[ -n "$signing" ]]; then
+    log "signing with $signing"
+    signing_config="{\"bundle\":{\"macOS\":{\"signingIdentity\":\"$signing\"}}}"
+elif [[ -n "${APPLE_CERTIFICATE:-}" ]]; then
+    # The certificate is the identity here, and the bundler imports it itself: naming one as
+    # well, this script's ad-hoc default included, makes it refuse the pair as mismatched.
+    log "signing with the certificate in APPLE_CERTIFICATE"
+    signing_config='{}'
+else
+    log "signing ad-hoc (set CRABSEND_SIGNING_IDENTITY to sign with an Apple-issued identity)"
+    signing_config='{"bundle":{"macOS":{"signingIdentity":"-"}}}'
+fi
+
 # CI=true keeps the dmg bundler from mounting a writable image and driving Finder through
 # AppleScript to lay out icons (tauri-bundler only passes --skip-jenkins on its own when it
 # sees CI); the Applications drop link and the volume icon are unaffected. The .app that
 # feeds the dmg is removed by the bundler once the dmg is written.
-CI=true pnpm tauri build --ci --target universal-apple-darwin --bundles dmg
+CI=true pnpm tauri build --ci --target universal-apple-darwin --bundles dmg --config "$signing_config"
 
 shopt -s nullglob
 dgms=("$dmg_dir"/*.dmg)
 ((${#dgms[@]})) || die "the build reported success but there is no dmg under $dmg_dir"
+
+# The dmg is what gets installed, so it is the app inside it that has to carry the
+# signature: that app is the one the system is asked to grant the local network to.
+for dmg in "${dgms[@]}"; do
+    mount_point="$(mktemp -d)"
+    hdiutil attach "$dmg" -nobrowse -quiet -mountpoint "$mount_point" ||
+        die "cannot mount $dmg to check the signature of the app inside it"
+    app="$(find "$mount_point" -maxdepth 1 -name '*.app' -print -quit)"
+    if [[ -z "$app" ]] || ! codesign --verify --strict "$app" 2>/dev/null; then
+        hdiutil detach -quiet "$mount_point" || true
+        die "the app in $dmg is not signed, and macOS 15 and later grant the local network by
+code signature: unsigned, it would find no device and reach none. Rerun this script (it
+signs ad-hoc), or set CRABSEND_SIGNING_IDENTITY to an Apple-issued identity."
+    fi
+    signature="$(codesign -dv "$app" 2>&1 | sed -n 's/^Signature=//p')"
+    hdiutil detach -quiet "$mount_point" || die "cannot unmount the app checked in $dmg"
+    rmdir "$mount_point"
+    log "the app in $(basename "$dmg") is signed (signature: ${signature:-unknown})"
+done
 
 log "dmg directory: $dmg_dir"
 for dmg in "${dgms[@]}"; do

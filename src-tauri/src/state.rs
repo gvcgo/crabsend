@@ -98,6 +98,11 @@ pub struct Snapshot {
     /// Whether a folder can be picked to send what is inside it: a desktop with
     /// its file dialog, a phone with the system's own folder picker.
     pub can_send_folder: bool,
+    /// What to tell the user when the system refuses this device's local
+    /// network traffic, `None` while it does not. Nothing this device starts
+    /// towards a peer can work while that lasts, which an empty device list
+    /// does not say by itself.
+    pub local_network_warning: Option<String>,
 }
 
 /// What pairing can do on the platform this build runs on.
@@ -535,7 +540,32 @@ impl AppState {
             can_open_files: cfg!(target_os = "android"),
             can_pick_folder: cfg!(not(any(target_os = "android", target_os = "ios"))),
             can_send_folder: cfg!(not(target_os = "ios")),
+            local_network_warning: self.local_network_warning(),
         }
+    }
+
+    /// The warning about a local network the system refuses, phrased for the
+    /// platform this build runs on.
+    ///
+    /// macOS 15 and later put the local network behind the user's permission. A
+    /// program the system has not granted it cannot announce itself, hear an
+    /// announcement or open a connection to a peer — while everything a peer
+    /// starts with it still works, which is what makes the failure read like
+    /// "there is no device here" instead of like a missing permission.
+    fn local_network_warning(&self) -> Option<String> {
+        let error = self.discovery.lock().as_ref()?.local_network_denied()?;
+        Some(if cfg!(target_os = "macos") {
+            format!(
+                "macOS is refusing Crabsend local network access ({error}): no device can be \
+                 found here, and sending to a phone fails. Allow Crabsend in System Settings → \
+                 Privacy & Security → Local Network, then scan again."
+            )
+        } else {
+            format!(
+                "Announcements cannot leave this device ({error}), so no device can be found. \
+                 A firewall or another program may be blocking the local network."
+            )
+        })
     }
 
     /// Every peer the user can send to: what discovery has seen, followed by
@@ -752,6 +782,18 @@ impl AppState {
                             }
                             DiscoveryEvent::MulticastFailed { error } => {
                                 tracing::warn!("multicast discovery unavailable: {error}");
+                            }
+                            // The system refusing the local network is the one
+                            // failure that looks exactly like "there is nobody
+                            // there", so it is the one the interface is told
+                            // about rather than left to guess at.
+                            DiscoveryEvent::LocalNetworkDenied { error } => {
+                                tracing::warn!("local network access is refused: {error}");
+                                state.emit_state();
+                            }
+                            DiscoveryEvent::LocalNetworkAllowed => {
+                                tracing::info!("local network access works again");
+                                state.emit_state();
                             }
                         }
                     }

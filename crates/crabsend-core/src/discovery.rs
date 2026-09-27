@@ -74,6 +74,13 @@ pub enum DiscoveryEvent {
     Updated(DiscoveredDevice),
     /// Every multicast socket is gone; discovery keeps working over HTTP only.
     MulticastFailed { error: String },
+    /// The operating system is refusing this device's local network traffic: an
+    /// announcement burst could not leave through a single socket because every
+    /// send was refused. Nothing this device does towards a peer can work while
+    /// that lasts, which is what makes it worth saying out loud.
+    LocalNetworkDenied { error: String },
+    /// A later announcement left the machine again, so the refusal is over.
+    LocalNetworkAllowed,
 }
 
 /// How to announce and how to reach back.
@@ -134,6 +141,10 @@ struct State {
     devices: Mutex<Vec<DiscoveredDevice>>,
     /// The sockets an announcement is sent through, one per interface.
     sockets: Mutex<Sockets>,
+    /// The system's error while it refuses every announcement, `None` while
+    /// announcements get through. Also what [`Discovery::local_network_denied`]
+    /// answers the application with.
+    refused: Mutex<Option<String>>,
     events: mpsc::UnboundedSender<DiscoveryEvent>,
 }
 
@@ -149,6 +160,7 @@ impl Discovery {
             config,
             devices: Mutex::new(Vec::new()),
             sockets: Mutex::new(Vec::new()),
+            refused: Mutex::new(None),
             events,
         });
         let shutdown = CancellationToken::new();
@@ -186,13 +198,34 @@ impl Discovery {
         let sockets: Sockets = self.state.sockets.lock().clone();
         for delay in ANNOUNCE_DELAYS {
             tokio::time::sleep(delay).await;
+            // What the burst amounts to: whether anything left the machine, and
+            // the system's own reason if it refused one of the sends.
+            let mut sent = 0usize;
+            let mut refused = None;
             for (socket, target) in sockets.iter() {
                 // A failing interface must not stop the others.
-                if let Err(error) = socket.send_to(&message, target).await {
-                    tracing::debug!("announcement via {target} failed: {error}");
+                match socket.send_to(&message, target).await {
+                    Ok(_) => sent += 1,
+                    Err(error) => {
+                        tracing::debug!("announcement via {target} failed: {error}");
+                        if refused_by_the_system(&error) {
+                            refused = Some(error);
+                        }
+                    }
                 }
             }
+            self.state.note_announcement(sent, refused);
         }
+    }
+
+    /// The system's error while it refuses this device's local network traffic,
+    /// `None` while announcements leave the machine.
+    ///
+    /// Worth telling the user about, because the refusal is silent everywhere
+    /// else: no interface is down, no socket is in an error state, and a peer
+    /// that is merely not answering looks exactly the same.
+    pub fn local_network_denied(&self) -> Option<String> {
+        self.state.refused.lock().clone()
     }
 
     /// The peers seen so far.
@@ -285,6 +318,34 @@ impl Discovery {
 }
 
 impl State {
+    /// Records what one announcement burst amounted to.
+    ///
+    /// Not a single socket getting a datagram out, while the system is what
+    /// refused the sends, is what the local network privilege being withheld
+    /// looks like: on macOS 15 and later every operation towards the local
+    /// network of a program that was not granted it fails that way, multicast
+    /// first. A burst that left through at least one socket is an ordinary
+    /// network, however many of its interfaces failed.
+    fn note_announcement(&self, sent: usize, refused: Option<std::io::Error>) {
+        if sent > 0 {
+            if self.refused.lock().take().is_some() {
+                let _ = self.events.send(DiscoveryEvent::LocalNetworkAllowed);
+            }
+            return;
+        }
+        let Some(error) = refused else {
+            return;
+        };
+        let error = error.to_string();
+        let mut refused = self.refused.lock();
+        if refused.as_deref() == Some(error.as_str()) {
+            return;
+        }
+        *refused = Some(error.clone());
+        drop(refused);
+        let _ = self.events.send(DiscoveryEvent::LocalNetworkDenied { error });
+    }
+
     /// Merges a confirmation into the device list and notifies the application.
     ///
     /// This device itself is never a peer, however it was learned about: a
@@ -404,6 +465,20 @@ fn forget_unseen(devices: &mut Vec<DiscoveredDevice>, since: SystemTime) -> usiz
     let known = devices.len();
     devices.retain(|device| device.last_seen >= since);
     known - devices.len()
+}
+
+/// Whether the operating system refused a send rather than the network failing.
+///
+/// A withheld local network privilege reports `EHOSTUNREACH` — "no route to
+/// host" — for every socket of every interface at once, which is also what a
+/// peer that stopped answering looks like on a single connection; what tells the
+/// two apart is the whole burst, not the error. `EPERM` is the other shape the
+/// refusal takes.
+fn refused_by_the_system(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::HostUnreachable
+    )
 }
 
 /// A peer's address as a host this device can dial.
@@ -673,6 +748,7 @@ mod tests {
             },
             devices: Mutex::new(Vec::new()),
             sockets: Mutex::new(Vec::new()),
+            refused: Mutex::new(None),
             events,
         });
         (state, receiver)
@@ -773,6 +849,76 @@ mod tests {
             .confirmed(info, "10.0.0.2", 53317, ProtocolType::Https, "proven")
             .unwrap();
         assert_eq!(device.fingerprint, "PROVEN");
+    }
+
+    #[test]
+    fn a_burst_the_system_refused_is_reported_once_and_cleared_again() {
+        let (state, mut events) = state();
+        // What a withheld local network privilege answers: every send of every
+        // socket fails the same way, and nothing left the machine.
+        state.note_announcement(0, Some(std::io::Error::from(std::io::ErrorKind::HostUnreachable)));
+        assert_eq!(state.refused.lock().as_deref(), Some("host unreachable"));
+        assert!(matches!(
+            events.try_recv(),
+            Ok(DiscoveryEvent::LocalNetworkDenied { .. })
+        ));
+        // The same refusal twice over is not a second piece of news.
+        state.note_announcement(0, Some(std::io::Error::from(std::io::ErrorKind::HostUnreachable)));
+        assert!(events.try_recv().is_err());
+
+        // One socket that got through is an ordinary network again, said once.
+        state.note_announcement(1, None);
+        assert!(state.refused.lock().is_none());
+        assert!(matches!(
+            events.try_recv(),
+            Ok(DiscoveryEvent::LocalNetworkAllowed)
+        ));
+        state.note_announcement(1, None);
+        assert!(events.try_recv().is_err());
+    }
+
+    #[test]
+    fn one_socket_failing_beside_a_working_one_is_not_a_refusal() {
+        let (state, mut events) = state();
+        // A mixed burst: what one interface cannot do is not what the system
+        // refuses this device.
+        state.note_announcement(1, Some(std::io::Error::from(std::io::ErrorKind::HostUnreachable)));
+        assert!(state.refused.lock().is_none());
+        assert!(events.try_recv().is_err());
+    }
+
+    #[test]
+    fn only_a_refusal_beside_an_empty_burst_is_news() {
+        // What the sends are classified by, where they are made: an error the
+        // system did not refuse with says nothing about a permission.
+        assert!(!refused_by_the_system(&std::io::Error::from(
+            std::io::ErrorKind::ConnectionRefused
+        )));
+        assert!(!refused_by_the_system(&std::io::Error::from(
+            std::io::ErrorKind::NetworkUnreachable
+        )));
+        assert!(refused_by_the_system(&std::io::Error::from(
+            std::io::ErrorKind::PermissionDenied
+        )));
+
+        // A burst with no sockets to send through was not refused by anyone.
+        let (state, mut events) = state();
+        state.note_announcement(0, None);
+        assert!(state.refused.lock().is_none());
+        assert!(events.try_recv().is_err());
+    }
+
+    /// The kernel's own error for a withheld local network privilege is what the
+    /// classification has to catch, not a hand-made error kind: macOS answers
+    /// `EHOSTUNREACH` for a multicast send it refuses.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn no_route_to_host_is_taken_for_a_refusal() {
+        let refused = std::io::Error::from_raw_os_error(libc::EHOSTUNREACH);
+        assert!(refused_by_the_system(&refused), "{refused:?}");
+        assert!(!refused_by_the_system(&std::io::Error::from_raw_os_error(
+            libc::ECONNREFUSED
+        )));
     }
 
     #[tokio::test]
