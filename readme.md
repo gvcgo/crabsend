@@ -98,6 +98,41 @@ scripts/build-arch.sh --no-build   # package the release binary that is already 
 The package installs `/usr/bin/crabsend`, a desktop entry and hicolor icons, and depends on
 `webkit2gtk-4.1`, `gtk3`, `libayatana-appindicator` and `librsvg`.
 
+### AppImage
+
+```bash
+scripts/build-appimage.sh                  # build, then bundle
+scripts/build-appimage.sh --install-deps   # install missing build dependencies first
+scripts/build-appimage.sh --extract        # keep the unpacked AppImage next to it
+scripts/build-appimage.sh --run            # launch the AppImage once it is built
+scripts/build-appimage.sh --mirror <base>  # fetch the bundler's tools through a mirror
+```
+
+It compiles the release binary — the frontend dependencies are installed here, so the network
+has to be reachable for `pnpm install` — and prints the AppImage, under
+`target/release/bundle/appimage`, next to the `Crabsend.AppDir` it was built from. Running it
+needs FUSE 2, or `--appimage-extract-and-run` where there is none; bundling needs neither,
+because the bundler runs linuxdeploy with that flag itself. `--mirror` (or
+`TAURI_BUNDLER_TOOLS_GITHUB_MIRROR`) serves the tools the bundler downloads on its first run —
+linuxdeploy, the GTK and AppImage plugins, an AppRun — from a GitHub mirror.
+
+Two things about this bundle the bundler gets wrong on its own, and the script does not.
+
+The tray icon is the way back to a window that has been closed, and its library
+(`libayatana-appindicator3`) is loaded with dlopen rather than linked, so nothing in the
+AppDir refers to it and linuxdeploy has no reason to deploy it. The load falls back to the
+older `libappindicator3` and then gives up, and giving up is a panic out of
+`libappindicator-sys`: an AppImage without either library dies at startup on a machine that
+has neither. The script stages the library into the AppDir, where the bundler treats it like
+any other file and deploys the libraries it needs (`libdbusmenu-gtk3`, `libdbusmenu-glib`)
+along with it.
+
+The stripping is switched off with `NO_STRIP=1`: linuxdeploy carries its own binutils 2.35,
+whose strip cannot read the `.relr.dyn` section a current distribution's libraries are built
+with, and linuxdeploy treats a failed strip call as fatal, which fails the whole bundling.
+What it would have stripped are the distribution's own libraries, already stripped by the
+distribution.
+
 ### macOS
 
 ```bash
