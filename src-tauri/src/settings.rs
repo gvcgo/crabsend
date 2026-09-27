@@ -270,16 +270,50 @@ fn legacy_alias() -> String {
     hostname().unwrap_or_else(|| FALLBACK_ALIAS.to_string())
 }
 
-/// The host name, which is what a peer is shown when the platform has neither a
-/// user name nor a device name. Android refuses to read this for an
-/// application, which is why its device name is read instead.
+/// The host name, which is what a peer is shown beside the user's name, and what
+/// tells the machines of one person apart.
+///
+/// Asked of the kernel, which every desktop answers. It used to be read out of
+/// `/proc/sys/kernel/hostname`, a file only Linux has: a Mac had no host name at
+/// all and announced the bare user name, so every Mac of one person looked like
+/// the same device to whoever was sending to it. A name no kernel would hand out
+/// — empty, or the `localhost` Android reports — is not a name.
 fn hostname() -> Option<String> {
-    let hostname = std::fs::read_to_string("/proc/sys/kernel/hostname").ok()?;
-    let hostname = hostname.trim().to_string();
-    if hostname.is_empty() || hostname == "localhost" {
+    let name = kernel_hostname()?;
+    // macOS answers with the machine's Bonjour name, whose `.local` is the
+    // service domain rather than part of the name.
+    #[cfg(target_os = "macos")]
+    let name = name.strip_suffix(".local").unwrap_or(&name).to_string();
+    let name = name.trim().to_string();
+    if name.is_empty() || name == "localhost" {
         return None;
     }
-    Some(hostname)
+    Some(name)
+}
+
+/// The name the kernel knows this machine by.
+#[cfg(unix)]
+fn kernel_hostname() -> Option<String> {
+    // One byte short of the buffer: a name of the largest length a kernel holds
+    // then still leaves the terminator this reads up to.
+    let mut buffer = [0 as libc::c_char; 256];
+    // SAFETY: the buffer is valid for the call, which writes at most the length
+    // it is given and leaves the rest of the buffer untouched.
+    let status = unsafe { libc::gethostname(buffer.as_mut_ptr(), buffer.len() - 1) };
+    if status != 0 {
+        return None;
+    }
+    // SAFETY: the buffer is zeroed and the call writes at most up to its last
+    // byte, so there is a terminator to stop at.
+    let name = unsafe { std::ffi::CStr::from_ptr(buffer.as_ptr()) };
+    Some(name.to_string_lossy().into_owned())
+}
+
+/// Windows has neither `/proc` nor `gethostname`: a build there announces the
+/// user name alone, as it did before.
+#[cfg(not(unix))]
+fn kernel_hostname() -> Option<String> {
+    None
 }
 
 /// The kind of device this build runs on.
@@ -470,6 +504,17 @@ mod tests {
         .save(&path)
         .unwrap();
         assert_eq!(Settings::load(&path).alias, "My Laptop");
+    }
+
+    /// A Mac used to announce the bare user name: the host name was read out of
+    /// a file only Linux has. What a phone lists for this device is this name,
+    /// so the machine has to be part of it.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_mac_names_the_machine_it_is_on() {
+        let name = user_at_host().expect("a user and a host");
+        assert!(name.contains('@'), "{name}");
+        assert!(!name.ends_with(".local"), "{name}");
     }
 
     #[test]
