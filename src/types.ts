@@ -71,6 +71,21 @@ export interface Device {
   paired: boolean;
 }
 
+/** A device this one is paired with, as the pairing dialog lists it. */
+export interface PairedPeer {
+  fingerprint: string;
+  alias: string;
+  protocol: Protocol;
+  host: string;
+  port: number;
+  /**
+   * Whether a scan reached this device in this run: `null` while none has
+   * tried, `false` after one failed. A device that is not online is missing
+   * from the device list; the pairing outlives that.
+   */
+  online: boolean | null;
+}
+
 /** What pairing can do on the platform the backend runs on. */
 export interface PairingSupport {
   /** Reading a code needs a camera, which only the mobile build can open. */
@@ -163,6 +178,8 @@ export interface Snapshot {
   device: DeviceInfo;
   server: ServerStatus;
   devices: Device[];
+  /** Every device paired by QR code, whether or not a scan reached it. */
+  pairedDevices: PairedPeer[];
   /** newest first */
   sessions: Session[];
   incoming: IncomingRequest | null;
@@ -173,8 +190,10 @@ export interface Snapshot {
   canRevealFiles: boolean;
   /** Whether a received file can be handed to an application that opens it. */
   canOpenFiles: boolean;
-  /** Whether this platform can ask the user for a directory. */
+  /** Whether this platform can ask the user for a directory to write into. */
   canPickFolder: boolean;
+  /** Whether a folder can be picked to send the files inside it. */
+  canSendFolder: boolean;
 }
 
 /** Payload of the `progress` event. */

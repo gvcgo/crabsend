@@ -1,5 +1,5 @@
-import { addDeviceByIp, clearDevices, describeError, scan } from "../api";
-import { button, el } from "../dom";
+import { addDeviceByIp, clearDevices, describeError, forgetDevice, scan } from "../api";
+import { button, el, iconButton } from "../dom";
 import { formatRelativeTime } from "../format";
 import { icon } from "../icons";
 import { store } from "../store";
@@ -151,10 +151,12 @@ export function createDevicesPanel(): HTMLElement {
     }
   }
 
-  function deviceCard(device: Device, now: number): HTMLButtonElement {
+  // One row of the device list: pressing it selects the device, and the button
+  // beside it drops the device — the pairing with it included.
+  function deviceCard(device: Device, now: number): HTMLElement {
     const selected = store.target === device.fingerprint;
-    const cardNode = el("button", {
-      class: selected ? "device-card is-selected" : "device-card",
+    const pick = el("button", {
+      class: "device-pick",
       attrs: { type: "button", "aria-pressed": String(selected) },
       title: `Fingerprint ${device.fingerprint}${device.paired ? " (paired)" : ""}`,
       children: [
@@ -173,10 +175,37 @@ export function createDevicesPanel(): HTMLElement {
         el("span", { class: "badge", text: device.protocol.toUpperCase() }),
       ],
     });
-    cardNode.addEventListener("click", () => {
+    pick.addEventListener("click", () => {
       store.selectTarget(device.fingerprint);
     });
-    return cardNode;
+
+    const forget = iconButton("trash", `Forget ${device.alias}`, {
+      class: "device-forget",
+      title: device.paired
+        ? `Forget ${device.alias}, pairing included`
+        : `Remove ${device.alias} from the list`,
+      onClick: () => {
+        void runForget(device);
+      },
+    });
+
+    return el("div", {
+      class: selected ? "device-card is-selected" : "device-card",
+      children: [pick, forget],
+    });
+  }
+
+  async function runForget(device: Device): Promise<void> {
+    try {
+      await forgetDevice(device.fingerprint);
+      // A pairing is gone for good; a device that was only seen is listed again
+      // the moment it is seen again.
+      showToast(
+        device.paired ? `Forgot ${device.alias}.` : `${device.alias} removed from the list.`,
+      );
+    } catch (error) {
+      showToast(describeError(error), "error");
+    }
   }
 
   function render(): void {

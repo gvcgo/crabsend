@@ -211,6 +211,18 @@ impl Discovery {
         self.state.devices.lock().clear();
     }
 
+    /// Forgets one peer, returning whether it was known.
+    ///
+    /// The user's way out of a device that is listed but not wanted: the peer
+    /// itself is untouched, so it is listed again the moment it announces
+    /// itself or answers a scan.
+    pub fn remove(&self, fingerprint: &str) -> bool {
+        let mut devices = self.state.devices.lock();
+        let before = devices.len();
+        devices.retain(|known| known.fingerprint != fingerprint);
+        devices.len() != before
+    }
+
     /// Forgets every peer that has not been seen since `since`, returning how
     /// many entries were dropped.
     ///
@@ -392,6 +404,21 @@ fn forget_unseen(devices: &mut Vec<DiscoveredDevice>, since: SystemTime) -> usiz
     let known = devices.len();
     devices.retain(|device| device.last_seen >= since);
     known - devices.len()
+}
+
+/// A peer's address as a host this device can dial.
+///
+/// A link-local IPv6 address is only usable together with the interface it
+/// belongs to, and the operating system refuses the connection without it
+/// (`EINVAL`): the scope id travels with the address and is kept in the
+/// `%<id>` form [`crate::client::encode_host`] turns back into that address.
+pub fn host_of(address: SocketAddr) -> String {
+    match address {
+        SocketAddr::V6(address) if address.scope_id() != 0 => {
+            format!("{}%{}", address.ip(), address.scope_id())
+        }
+        address => address.ip().to_string(),
+    }
 }
 
 /// Strips the brackets a user may type around an IPv6 address.
@@ -597,12 +624,7 @@ async fn receive_loop(
 
 /// Registers with a peer that just announced itself.
 async fn answer_announcement(state: Arc<State>, remote: SocketAddr, message: MulticastMessage) {
-    let host = match remote {
-        SocketAddr::V6(address) if address.scope_id() != 0 => {
-            format!("{}%{}", address.ip(), address.scope_id())
-        }
-        address => address.ip().to_string(),
-    };
+    let host = host_of(remote);
     // Over HTTPS the announced fingerprint is what the certificate must prove.
     let pin = match message.protocol {
         ProtocolType::Https => Some(message.fingerprint.as_str()),

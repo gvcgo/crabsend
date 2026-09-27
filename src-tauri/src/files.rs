@@ -26,6 +26,103 @@ const MAX_DEPTH: usize = 32;
 /// What Android's document picker returns instead of a path.
 const CONTENT_URI_PREFIX: &str = "content://";
 
+/// Asks the user for a folder and describes the files it holds.
+///
+/// `None` is the answer to a folder nobody picked, which is what leaves the file
+/// list as it was; an empty list is a folder that holds no files.
+///
+/// A desktop answers with a path, which is walked here like a dropped folder. A
+/// phone's own picker cannot hand out a path — what it hands out is a folder in
+/// a provider, which is asked for its files instead, and each of those is copied
+/// out of the provider like any other picked file.
+pub async fn pick_folder(app: &AppHandle) -> Result<Option<Vec<SendFile>>> {
+    #[cfg(target_os = "android")]
+    {
+        let listing = crate::platform::pick_folder(app).await?;
+        if listing.trim().is_empty() {
+            return Ok(None);
+        }
+        return inspect_listing(app, &listing).map(Some);
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let Some(path) = pick_folder_path(app).await? else {
+            return Ok(None);
+        };
+        let resolved = ingest(app, &[path])?;
+        inspect(&resolved).map(Some)
+    }
+}
+
+/// The folder the user picks in the platform's own dialog, if any.
+#[cfg(not(target_os = "android"))]
+async fn pick_folder_path(app: &AppHandle) -> Result<Option<String>> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let (answer, picked) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .set_title("Add folder")
+        .pick_folder(move |path| {
+            // A picked folder is always a real path on a desktop; a URI would be
+            // something this cannot walk.
+            let _ = answer.send(path);
+        });
+    let Some(picked) = picked.await.context("the folder dialog was taken away")? else {
+        return Ok(None);
+    };
+    let path = picked
+        .into_path()
+        .context("the picked folder is not on the file system")?;
+    Ok(Some(path.display().to_string()))
+}
+
+/// Android's answer to a folder pick: the folder's name and one entry per file
+/// under it, named by the path the file has below that folder.
+#[cfg(target_os = "android")]
+#[derive(serde::Deserialize)]
+struct Listing {
+    name: String,
+    entries: Vec<ListedFile>,
+}
+
+/// One file of such a listing: a document of the provider that holds it.
+#[cfg(target_os = "android")]
+#[derive(serde::Deserialize)]
+struct ListedFile {
+    uri: String,
+    name: String,
+    /// Milliseconds since the epoch, as the provider answered; zero when it
+    /// keeps no such thing.
+    modified: u64,
+}
+
+/// Describes the files of a folder Android's picker answered with.
+///
+/// The name each file is given carries the picked folder and the path it has
+/// inside it, which is the structure the receiver recreates. The bytes come out
+/// of the provider once, into the cache, where hashing and uploading open them
+/// like any other file.
+#[cfg(target_os = "android")]
+fn inspect_listing(app: &AppHandle, listing: &str) -> Result<Vec<SendFile>> {
+    let listing: Listing = serde_json::from_str(listing).context("reading the picked folder")?;
+    let mut files = Vec::with_capacity(listing.entries.len().min(MAX_ENTRIES));
+    for entry in listing.entries.into_iter().take(MAX_ENTRIES) {
+        let path = materialize(app, &entry.uri)?;
+        let path = Path::new(&path);
+        let metadata =
+            std::fs::metadata(path).with_context(|| format!("reading {}", path.display()))?;
+        let mut file = describe(path, format!("{}/{}", listing.name, entry.name), &metadata);
+        // The provider knows when the file was written; the copy knows only when
+        // it was made.
+        file.modified = (entry.modified > 0)
+            .then(|| UNIX_EPOCH + std::time::Duration::from_millis(entry.modified))
+            .and_then(format_timestamp);
+        files.push(file);
+    }
+    Ok(files)
+}
+
 /// Turns what the picker returned into paths this application can open.
 ///
 /// Android hands out `content://` URIs, which are not files but handles to the

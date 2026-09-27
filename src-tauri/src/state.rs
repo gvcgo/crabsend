@@ -75,6 +75,8 @@ pub struct Snapshot {
     pub device: DeviceInfoOut,
     pub server: ServerStatus,
     pub devices: Vec<DeviceOut>,
+    /// Every device paired by QR code, whether or not a scan reached it.
+    pub paired_devices: Vec<PairedPeerOut>,
     pub sessions: Vec<Session>,
     pub incoming: Option<IncomingRequest>,
     pub history: Vec<HistoryEntry>,
@@ -89,9 +91,13 @@ pub struct Snapshot {
     /// manager, and what a desktop does not need: its file manager is already
     /// one keystroke away.
     pub can_open_files: bool,
-    /// Whether this platform can ask the user for a directory. Android's file
-    /// dialogs cannot, so the buttons that would are hidden there.
+    /// Whether this platform can ask the user for a directory to write into.
+    /// Android's file dialogs cannot, so the buttons that would are hidden
+    /// there; sending a folder is a different question, see [`Self::can_send_folder`].
     pub can_pick_folder: bool,
+    /// Whether a folder can be picked to send what is inside it: a desktop with
+    /// its file dialog, a phone with the system's own folder picker.
+    pub can_send_folder: bool,
 }
 
 /// What pairing can do on the platform this build runs on.
@@ -152,6 +158,25 @@ pub struct DeviceOut {
     pub paired: bool,
 }
 
+/// A device this one is paired with, as the pairing dialog lists it.
+///
+/// A pairing outlives a scan that cannot reach the device — only *Forget*
+/// undoes it — so the dialog keeps offering every one of them, each with its
+/// own way to be forgotten, and says which of them is missing from the device
+/// list beside it.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PairedPeerOut {
+    pub fingerprint: String,
+    pub alias: String,
+    pub protocol: ProtocolType,
+    pub host: String,
+    pub port: u16,
+    /// Whether a scan reached this device in this run: `None` while none has
+    /// tried, `Some(false)` after one failed to.
+    pub online: Option<bool>,
+}
+
 /// A device this one was paired with, as stored between runs.
 ///
 /// The address is what the pairing code carried, so it is a hint rather than a
@@ -169,6 +194,16 @@ pub struct PairedPeer {
     /// When this device last answered: the moment the code was scanned, then
     /// every scan that reached it again, in milliseconds since the epoch.
     pub last_seen: u64,
+    /// Whether a scan has reached this device since this run started.
+    ///
+    /// `None` until a scan tries: a pairing is offered at startup on the
+    /// strength of the address the code carried, without dialling it, because
+    /// a device that is switched off would otherwise add a timeout to every
+    /// launch. A scan is what turns that into a fact, and a device it cannot
+    /// reach stops being offered until one reaches it again. Not persisted:
+    /// what a scan learned holds for the run that saw it, nothing more.
+    #[serde(skip)]
+    pub online: Option<bool>,
 }
 
 impl PairedPeer {
@@ -486,6 +521,7 @@ impl AppState {
             },
             server: status,
             devices: self.devices(),
+            paired_devices: self.paired.lock().iter().map(paired_peer_out).collect(),
             sessions,
             incoming: self
                 .incoming
@@ -498,6 +534,7 @@ impl AppState {
             can_reveal_files: cfg!(not(any(target_os = "android", target_os = "ios"))),
             can_open_files: cfg!(target_os = "android"),
             can_pick_folder: cfg!(not(any(target_os = "android", target_os = "ios"))),
+            can_send_folder: cfg!(not(target_os = "ios")),
         }
     }
 
@@ -529,6 +566,13 @@ impl AppState {
                 device.fingerprint == peer.fingerprint
                     || (device.host == peer.host && device.port == peer.port)
             }) {
+                continue;
+            }
+            // A scan that could not reach the device is what drops a pairing
+            // from this list: what the user can send to is what is there. The
+            // pairing itself is untouched, so a scan that reaches the device
+            // again offers it once more.
+            if peer.online == Some(false) {
                 continue;
             }
             devices.push(paired_device(peer));
@@ -844,6 +888,8 @@ impl AppState {
             host,
             port: payload.port,
             last_seen: now_ms(),
+            // It answered the registration the code drove, in this run.
+            online: Some(true),
         };
         {
             let mut paired = self.paired.lock();
@@ -863,16 +909,45 @@ impl AppState {
 
     /// Forgets a device this one was paired with.
     pub fn unpair(&self, fingerprint: &str) -> Result<()> {
-        let removed = {
-            let mut paired = self.paired.lock();
-            let before = paired.len();
-            paired.retain(|peer| peer.fingerprint != fingerprint);
-            paired.len() != before
-        };
-        anyhow::ensure!(removed, "no paired device has that fingerprint");
+        anyhow::ensure!(
+            self.drop_pairing(fingerprint),
+            "no paired device has that fingerprint"
+        );
         self.save_paired();
         self.emit_state();
         Ok(())
+    }
+
+    /// Drops one device from the list, pairing included.
+    ///
+    /// What a device card's way out does. A pairing is forgotten for good —
+    /// only pairing again brings the device back — while a mere sighting is
+    /// forgotten until the device is seen again, by announcing itself or by
+    /// answering a scan. Unlike [`AppState::unpair`] this needs no pairing to
+    /// exist: the list holds devices this one was never paired with, and the
+    /// user asks for them to go the same way.
+    pub fn forget_device(&self, fingerprint: &str) -> Result<()> {
+        let unpaired = self.drop_pairing(fingerprint);
+        let sighted = self
+            .discovery
+            .lock()
+            .as_ref()
+            .is_some_and(|discovery| discovery.remove(fingerprint));
+        anyhow::ensure!(unpaired || sighted, "no device has that fingerprint");
+        if unpaired {
+            self.save_paired();
+        }
+        self.emit_state();
+        Ok(())
+    }
+
+    /// Drops a pairing, reporting whether there was one to drop. Saving and
+    /// publishing are the caller's, because not every caller has both to do.
+    fn drop_pairing(&self, fingerprint: &str) -> bool {
+        let mut paired = self.paired.lock();
+        let before = paired.len();
+        paired.retain(|peer| peer.fingerprint != fingerprint);
+        paired.len() != before
     }
 
     /// Refreshes the address and the details of every paired device.
@@ -887,9 +962,7 @@ impl AppState {
         // across an await.
         let peers = self.paired.lock().clone();
         for peer in peers {
-            let Ok((info, host)) = self.register_pinned(&peer.payload()).await else {
-                continue;
-            };
+            let answer = self.register_pinned(&peer.payload()).await;
             let mut paired = self.paired.lock();
             let Some(known) = paired
                 .iter_mut()
@@ -897,8 +970,16 @@ impl AppState {
             else {
                 continue;
             };
+            let Ok((info, host)) = answer else {
+                // The device did not answer this scan: it stops being offered
+                // until one reaches it again. The pairing stays, so that is a
+                // list the user sees change and not a pairing they lose.
+                known.online = Some(false);
+                continue;
+            };
             known.host = host;
             known.last_seen = now_ms();
+            known.online = Some(true);
             if !info.alias.trim().is_empty() {
                 known.alias = info.alias;
             }
@@ -1366,7 +1447,7 @@ impl AppState {
             device_type: peer.info.device_type,
             download: peer.info.download,
             protocol: peer.info.protocol,
-            host: peer.address.to_string(),
+            host: crabsend_core::discovery::host_of(peer.address),
             port: peer.info.port,
             last_seen: SystemTime::now(),
         };
@@ -1926,6 +2007,18 @@ fn paired_device(peer: &PairedPeer) -> DeviceOut {
         download: false,
         last_seen: peer.last_seen,
         paired: true,
+    }
+}
+
+/// How the pairing dialog lists a device this one is paired with.
+fn paired_peer_out(peer: &PairedPeer) -> PairedPeerOut {
+    PairedPeerOut {
+        fingerprint: peer.fingerprint.clone(),
+        alias: peer.alias.clone(),
+        protocol: peer.protocol,
+        host: peer.host.clone(),
+        port: peer.port,
+        online: peer.online,
     }
 }
 

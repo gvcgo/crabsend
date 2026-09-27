@@ -152,8 +152,9 @@ pub enum UploadDecision {
 pub struct PeerIdentity {
     /// What the peer claimed about itself.
     pub info: RegisterDto,
-    /// Where the request came from.
-    pub address: IpAddr,
+    /// Where the request came from, the interface included: a link-local IPv6
+    /// peer is only reachable through the one its address belongs to.
+    pub address: SocketAddr,
     /// Fingerprint proven by the TLS handshake, when the peer used HTTPS.
     pub cert_fingerprint: Option<String>,
 }
@@ -398,7 +399,12 @@ enum FileStatus {
 /// Peer information extracted from the connection.
 #[derive(Clone, Debug)]
 struct PeerInfo {
-    ip: IpAddr,
+    /// Where the request came from, the interface included.
+    ///
+    /// An `IpAddr` alone is not enough: a link-local IPv6 peer can only be
+    /// reached through the interface its address belongs to, and the operating
+    /// system refuses a connection that does not name it.
+    address: SocketAddr,
     cert_fingerprint: Option<String>,
 }
 
@@ -443,14 +449,14 @@ async fn register(
         let _ = state.events.send(ServerEvent::Discovered {
             peer: PeerIdentity {
                 info: payload,
-                address: peer.ip,
+                address: peer.address,
                 cert_fingerprint: peer.cert_fingerprint.clone(),
             },
         });
     } else {
         tracing::warn!(
             "ignoring registration from {}: claimed fingerprint does not match its certificate",
-            peer.ip
+            peer.address.ip()
         );
     }
 
@@ -469,7 +475,7 @@ async fn prepare_upload(
     Query(query): Query<PinQuery>,
     body: Bytes,
 ) -> Response {
-    if let Err(response) = check_pin(&state, &peer.ip, query.pin.as_deref()).await {
+    if let Err(response) = check_pin(&state, &peer.address.ip(), query.pin.as_deref()).await {
         return response;
     }
     let payload: PrepareUploadRequest = match parse_json(&body) {
@@ -490,7 +496,7 @@ async fn prepare_upload(
         }
         *slot = Some(Session::Pending(PendingSession {
             id: session_id.clone(),
-            sender_ip: peer.ip,
+            sender_ip: peer.address.ip(),
             cancel: cancel.clone(),
         }));
     }
@@ -508,7 +514,7 @@ async fn prepare_upload(
             session_id: session_id.clone(),
             peer: PeerIdentity {
                 info: payload.info,
-                address: peer.ip,
+                address: peer.address,
                 cert_fingerprint: peer.cert_fingerprint.clone(),
             },
             files,
@@ -575,7 +581,7 @@ async fn prepare_upload(
         .collect();
     *slot = Some(Session::Active(ActiveSession {
         id: session_id.clone(),
-        sender_ip: peer.ip,
+        sender_ip: peer.address.ip(),
         destination,
         files: accepted,
         last_activity: Instant::now(),
@@ -610,7 +616,7 @@ async fn upload(
         let mut slot = state.session.lock().await;
         match slot.as_mut() {
             Some(Session::Active(session))
-                if session.id == session_id && session.sender_ip == peer.ip =>
+                if session.id == session_id && session.sender_ip == peer.address.ip() =>
             {
                 session.last_activity = Instant::now();
                 match session.files.get_mut(&file_id) {
@@ -777,7 +783,7 @@ async fn cancel(
             // Before the response, a sender does not know the session id yet: a
             // cancel from the same address is the only signal that it gave up.
             Some(Session::Pending(pending))
-                if pending.sender_ip == peer.ip
+                if pending.sender_ip == peer.address.ip()
                     && query
                         .session_id
                         .as_deref()
@@ -788,7 +794,7 @@ async fn cancel(
                 *slot = None;
             }
             Some(Session::Active(session))
-                if session.sender_ip == peer.ip
+                if session.sender_ip == peer.address.ip()
                     && query.session_id.as_deref() == Some(session.id.as_str()) =>
             {
                 ended = Some(session.id.clone());
@@ -1115,7 +1121,6 @@ async fn serve_connection(
     acceptor: Option<TlsAcceptor>,
     shutdown: CancellationToken,
 ) {
-    let ip = remote.ip();
     match acceptor {
         Some(acceptor) => {
             let tls = match acceptor.accept(stream).await {
@@ -1134,7 +1139,7 @@ async fn serve_connection(
             serve_http(
                 TokioIo::new(tls),
                 PeerInfo {
-                    ip,
+                    address: remote,
                     cert_fingerprint,
                 },
                 router,
@@ -1146,7 +1151,7 @@ async fn serve_connection(
             serve_http(
                 TokioIo::new(stream),
                 PeerInfo {
-                    ip,
+                    address: remote,
                     cert_fingerprint: None,
                 },
                 router,

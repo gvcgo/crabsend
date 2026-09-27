@@ -1,4 +1,11 @@
-import { describeError, inspectFiles, onDragDrop, pickFiles, pickFolder, sendFiles } from "../api";
+import {
+  describeError,
+  inspectFiles,
+  onDragDrop,
+  pickFiles,
+  pickFolderForSending,
+  sendFiles,
+} from "../api";
 import { button, el, iconButton } from "../dom";
 import { formatBytes, isDirectoryMime } from "../format";
 import { icon } from "../icons";
@@ -82,10 +89,11 @@ export function createSendView(options: SendViewOptions): HTMLElement {
   function renderSendState(): void {
     sendButton.disabled = busy || inspecting || selected.length === 0 || store.target === null;
     addFilesButton.disabled = inspecting;
-    // Android's file dialogs cannot choose a directory, and a picked tree URI
-    // is not a folder this application can walk, so the button goes away there.
+    // A phone picks a folder through the system's own picker, a desktop through
+    // its file dialog: both answer with the files inside, so the button is
+    // there wherever either can be asked.
     addFolderButton.disabled = inspecting;
-    addFolderButton.hidden = store.snapshot?.canPickFolder === false;
+    addFolderButton.hidden = store.snapshot?.canSendFolder === false;
     sendButton.classList.toggle("is-busy", busy);
   }
 
@@ -190,13 +198,28 @@ export function createSendView(options: SendViewOptions): HTMLElement {
   }
 
   async function pickAndAddFolder(): Promise<void> {
+    inspecting = true;
+    renderSendState();
     try {
-      const path = await pickFolder("Add folder", null);
-      if (path !== null) {
-        await addPaths([path]);
+      const files = await pickFolderForSending();
+      if (files === null) {
+        return;
       }
+      if (files.length === 0) {
+        showToast("That folder holds no files.");
+        return;
+      }
+      for (const file of files) {
+        if (!selected.some((item) => item.path === file.path)) {
+          selected.push(file);
+        }
+      }
+      renderFiles();
     } catch (error) {
       showToast(describeError(error), "error");
+    } finally {
+      inspecting = false;
+      renderSendState();
     }
   }
 

@@ -10,11 +10,18 @@ no cloud.
 
 - **Discovery** — multicast announcements on `224.0.0.167:53317` (IPv4) and `ff12::fd3a:e420`
   (IPv6), answered over HTTPS, plus a `/24` subnet scan and manual "add by IP" as fallbacks.
+  A device introduces itself by who is at it — `user@host` on a desktop, and on a phone, which
+  has no login, the device name Android shows in its own settings — and by the kind of device it
+  is, which is the icon a peer draws beside that name and which a phone reports as a phone. Both
+  are editable in the settings: a name someone typed is never replaced by a default, while the
+  outdated defaults of older versions are (a host name, and a phone that called itself a
+  desktop, which is every phone until now).
 - **Pairing** — *Show QR* puts this device's address, port and certificate fingerprint into a
   code; *Scan QR* on the other device reads it and connects to exactly that device, without
   discovery. The fingerprint travels off the network, so the scanning side pins the connection
   to it and a device answering in its place is refused during the TLS handshake. A paired
-  device is remembered in `peers.json`, its address refreshed whenever *Scan* reaches it again.
+  device is remembered in `peers.json`, its address refreshed whenever *Scan* reaches it again;
+  a scan that cannot reach it takes it out of the device list until one can.
   This is Crabsend's own extension: LocalSend v2.2 defines no pairing or QR concept, and no
   LocalSend client scans codes today.
 - **Sending** — pick files and folders or drop them on the window, choose a device, send.
@@ -158,11 +165,18 @@ the transfer server only accepts connections while Crabsend is in the foreground
 devices drop multicast traffic with the Wi-Fi radio idle, which is why the *Scan* button also
 probes every host of the local subnet. A scan is what keeps the device list current as well: a
 peer that answers neither the announcement nor the probe is dropped, so a device that left the
-network — or that came back under another identity — stops being offered. A paired device stays
-in the list either way, since its address is a pairing rather than a sighting. A device is
-offered once, never twice: discovery keys a peer by the fingerprint its certificate proves, and
-one address is taken to hold one device, so a peer that answers there again under a new identity
-replaces what was known for that address instead of joining it in the list.
+network — or that came back under another identity — stops being offered. A paired device is
+treated the same way, with one difference: a scan that cannot reach it drops it from the list
+but not from the pairing, so it is offered again the moment a scan reaches it, and only *Forget*
+in the pairing dialog undoes the pairing itself. Every device card also carries its own way out:
+the button at its right edge drops that device there and then — the pairing with it included, so
+a device that is gone for good stops coming back. A device that was only seen (never paired) is
+listed again the moment it is seen again, which is what *Clear*, and a scan, do for the whole
+list at once. *Forget* in the pairing dialog is the narrower one: it stops the pairing and leaves
+the device listed while it is there. A device is offered once, never twice:
+discovery keys a peer by the fingerprint its certificate proves, and one address is taken to
+hold one device, so a peer that answers there again under a new identity replaces what was known
+for that address instead of joining it in the list.
 
 Files received on a phone land in its public download directory
 (`/storage/emulated/0/Download/Crabsend/`), which the phone's Files application lists.
@@ -183,10 +197,16 @@ its file managers work through the media database, which knows files and not the
 in — so where the desktop offers *Show in folder*, a phone offers *Open* instead. That hands the
 file to whatever application opens its type, through the content URI the media database knows it
 by, or through the file provider the application declares when the database does not, with the
-read grant the viewer needs. Choosing a directory is the action a phone has no replacement for
-(Android's dialogs cannot pick one). Files picked through Android's picker come back as
-`content://` URIs, which the application reads into its cache before hashing and sending,
-because only the provider that issued the URI can read the bytes.
+read grant the viewer needs. Choosing a directory to *write into* is the action a phone has no
+replacement for (Android's dialogs cannot pick one), which is why the download directory is set
+for it and not chosen; picking a directory to *send from* is another matter: that goes through
+Android's own folder picker (`ACTION_OPEN_DOCUMENT_TREE`, reached over JNI like the media
+scanner, because the dialog plugin has no directory support), and the activity answers with the
+files under the picked tree, each named by the path it has below it, so the receiver still
+recreates the structure. Sending a folder is therefore offered on a phone as well. Files picked
+through Android's picker come back as `content://` URIs, which the application reads into its
+cache before hashing and sending, because only the provider that issued the URI can read the
+bytes.
 
 Only the mobile build can read a pairing code: the camera side of the barcode plugin has no
 desktop implementation, so the desktop shows codes and the phone scans them. The plugin brings
@@ -220,8 +240,9 @@ Both live in the platform configuration directory (`~/.config/dev.crabsend.app` 
   start. Its fingerprint *is* this device's identity; deleting it makes the device appear new
   to everyone.
 - `peers.json` — the devices paired by QR code. Each entry is a name, an address and the
-  fingerprint that was proven by the scan; the address is a hint that *Scan* refreshes, and
-  *Forget* in the pairing dialog drops the entry.
+  fingerprint that was proven by the scan; the address is a hint that *Scan* refreshes, a
+  device *Scan* cannot reach disappears from the device list until it can, and *Forget* in the
+  pairing dialog drops the entry — as does the button on the device's own card.
 
 Changing the port, the encryption mode, the alias, the device model/type or the download
 directory restarts the transfer server and discovery.

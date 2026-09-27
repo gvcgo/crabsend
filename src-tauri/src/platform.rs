@@ -13,6 +13,15 @@ use std::path::Path;
 use anyhow::Result;
 use tauri::AppHandle;
 
+#[cfg(target_os = "android")]
+use parking_lot::Mutex;
+#[cfg(target_os = "android")]
+use std::time::Duration;
+#[cfg(target_os = "android")]
+use tokio::sync::oneshot;
+#[cfg(target_os = "android")]
+use tokio::time::timeout;
+
 /// Gives a finished file to the phone's media database, which is what makes it
 /// show up in a file manager, a gallery and over USB. Does nothing on a
 /// desktop, where those read the file system itself.
@@ -43,6 +52,75 @@ pub fn open(app: &AppHandle, path: &Path) -> Result<()> {
             .open_path(path.to_string_lossy(), None::<&str>)?;
         Ok(())
     }
+}
+
+/// How long a folder picker may keep the interface waiting. A phone that takes
+/// the picker away with the activity answers nothing at all, which is what this
+/// bounds.
+#[cfg(target_os = "android")]
+const PICKER_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// The listing the folder picker is waiting for, handed over by the activity's
+/// [`folderPicked`] call.
+#[cfg(target_os = "android")]
+static FOLDER_LISTING: Mutex<Option<oneshot::Sender<String>>> = Mutex::new(None);
+
+/// Asks the user for a folder, through Android's own picker.
+///
+/// The answer is what the activity's `listFolder` produces — the files of the
+/// picked folder, or an empty string when nothing was picked.
+#[cfg(target_os = "android")]
+pub async fn pick_folder(app: &AppHandle) -> Result<String> {
+    let (sender, receiver) = oneshot::channel();
+    *FOLDER_LISTING.lock() = Some(sender);
+    call_activity_void(app, "pickFolder")?;
+    match timeout(PICKER_TIMEOUT, receiver).await {
+        Ok(Ok(listing)) => Ok(listing),
+        // The sender is dropped when the activity does, which a restart of the
+        // interface between the pick and the answer does.
+        Ok(Err(_)) => anyhow::bail!("the folder picker went away"),
+        Err(_) => anyhow::bail!("the folder picker never answered"),
+    }
+}
+
+/// Called by the activity when the folder picker is done; see [`pick_folder`].
+///
+/// # Safety
+///
+/// Called by the JVM with the arguments of the `external fun folderPicked` it
+/// belongs to, which is the only caller.
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_crabsend_app_MainActivity_folderPicked(
+    mut env: jni::JNIEnv,
+    _activity: jni::objects::JObject,
+    listing: jni::objects::JString,
+) {
+    let listing = env
+        .get_string(&listing)
+        .map(|text| text.into())
+        .unwrap_or_default();
+    if let Some(sender) = FOLDER_LISTING.lock().take() {
+        let _ = sender.send(listing);
+    }
+}
+
+/// Calls one of the activity's no-argument methods, from the webview's thread.
+#[cfg(target_os = "android")]
+fn call_activity_void(app: &AppHandle, method: &'static str) -> Result<()> {
+    use tauri::Manager;
+
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| anyhow::anyhow!("there is no window to run this in"))?;
+    window.with_webview(move |webview| {
+        webview.jni_handle().exec(move |env, activity, _webview| {
+            if let Err(error) = env.call_method(activity, method, "()V", &[]) {
+                tracing::warn!("the activity's {method} failed: {error}");
+            }
+        });
+    })?;
+    Ok(())
 }
 
 /// Calls one of the methods the Android activity exposes to the interface.

@@ -1,7 +1,7 @@
 import { describeError, unpairDevice } from "../api";
 import { button, el } from "../dom";
 import { store } from "../store";
-import type { Device } from "../types";
+import type { PairedPeer } from "../types";
 import { showToast } from "./toast";
 
 /** The paired devices, each with a way to forget it. */
@@ -22,7 +22,7 @@ export function createPairedList(emptyText: string): PairedList {
   const rows = el("div", { class: "paired-list" });
   const empty = el("p", { class: "empty", text: emptyText });
 
-  function row(device: Device): HTMLElement {
+  function row(device: PairedPeer): HTMLElement {
     return el("div", {
       class: "paired-row",
       children: [
@@ -36,6 +36,11 @@ export function createPairedList(emptyText: string): PairedList {
             }),
           ],
         }),
+        // A scan did not reach it, so the device list beside this dialog does
+        // not offer it: the pairing stays, and this says why it is missing.
+        device.online === false
+          ? el("span", { class: "badge badge-offline", text: "Offline" })
+          : null,
         button("Forget", {
           class: "btn btn-ghost",
           title: `Stop pairing with ${device.alias}`,
@@ -47,7 +52,7 @@ export function createPairedList(emptyText: string): PairedList {
     });
   }
 
-  async function forget(device: Device): Promise<void> {
+  async function forget(device: PairedPeer): Promise<void> {
     try {
       await unpairDevice(device.fingerprint);
       showToast(`Forgot ${device.alias}.`);
@@ -57,7 +62,7 @@ export function createPairedList(emptyText: string): PairedList {
   }
 
   function render(): void {
-    const paired = (store.snapshot?.devices ?? []).filter((device) => device.paired);
+    const paired = store.snapshot?.pairedDevices ?? [];
     rows.replaceChildren(...paired.map(row));
     rows.hidden = paired.length === 0;
     empty.hidden = paired.length > 0;

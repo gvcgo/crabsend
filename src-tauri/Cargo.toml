@@ -19,6 +19,8 @@ crabsend-core = { path = "../crates/crabsend-core" }
 anyhow.workspace = true
 dirs.workspace = true
 futures-util.workspace = true
+# Reads the name the platform knows its user (a desktop) or device (a phone) by.
+libc.workspace = true
 mime_guess.workspace = true
 parking_lot.workspace = true
 # Only the SVG renderer: `image` would drag in the whole codec stack to draw

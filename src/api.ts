@@ -36,9 +36,19 @@ export function pairFromQr(payload: string): Promise<Device> {
   return invoke<Device>("pair_from_qr", { payload });
 }
 
+/** `pick_folder` — asks for a folder, returns its files; `null` when none was picked. */
+export function pickFolderForSending(): Promise<SendFile[] | null> {
+  return invoke<SendFile[] | null>("pick_folder");
+}
+
 /** `unpair_device` — forgets a device this one was paired with. */
 export function unpairDevice(fingerprint: string): Promise<void> {
   return invoke<void>("unpair_device", { fingerprint });
+}
+
+/** `forget_device` — drops one device from the list, pairing included. */
+export function forgetDevice(fingerprint: string): Promise<void> {
+  return invoke<void>("forget_device", { fingerprint });
 }
 
 export function clearDevices(): Promise<void> {

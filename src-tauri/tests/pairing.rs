@@ -141,6 +141,31 @@ async fn a_code_naming_another_identity_never_reaches_the_device() -> Result<()>
 }
 
 #[tokio::test]
+async fn a_device_can_be_dropped_from_the_list() -> Result<()> {
+    let owner_dir = tempfile::tempdir()?;
+    let owner = device(owner_dir.path(), "Code owner").await?;
+
+    let scanner_dir = tempfile::tempdir()?;
+    let scanner = Arc::new(AppState::new_headless(scanner_dir.path().to_path_buf())?);
+    let paired = scanner.pair_from_qr(&loopback_code(&owner).await?).await?;
+
+    scanner.forget_device(&paired.fingerprint)?;
+    assert!(scanner.snapshot().devices.is_empty());
+    assert!(scanner.snapshot().paired_devices.is_empty());
+
+    // The pairing is gone from disk as well; nothing offers the device again.
+    let reloaded = Arc::new(AppState::new_headless(scanner_dir.path().to_path_buf())?);
+    assert!(reloaded.snapshot().devices.is_empty());
+    assert!(reloaded.snapshot().paired_devices.is_empty());
+
+    // A device the list does not hold cannot be dropped.
+    assert!(scanner.forget_device(&paired.fingerprint).is_err());
+
+    owner.stop().await;
+    Ok(())
+}
+
+#[tokio::test]
 async fn this_devices_own_code_is_refused() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let state = device(dir.path(), "Myself").await?;

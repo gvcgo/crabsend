@@ -486,17 +486,48 @@ input[type="checkbox"] {
   gap: 10px;
 }
 
+/* The card itself is not a button: what selects the device and what drops it
+   are two buttons inside it, because one cannot be a button within the other. */
 .device-card {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
+  gap: 4px;
+  padding: 8px 10px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--bg-input);
   color: var(--text);
+}
+
+/* Everything in the card except its way out: pressing this selects the device. */
+.device-pick {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+  padding: 2px;
+  border: none;
+  background: none;
   text-align: left;
   cursor: pointer;
+}
+
+/* Dropping a device — its pairing included — is asked for on its own, never by
+   selecting the device it belongs to. */
+.device-forget {
+  display: inline-flex;
+  padding: 4px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.device-forget:hover {
+  color: var(--danger);
+  background: var(--danger-soft);
 }
 
 .device-card:hover {
@@ -548,6 +579,13 @@ input[type="checkbox"] {
 .badge-paired {
   border-color: var(--accent);
   color: var(--accent);
+}
+
+/* A pairing listed in the dialog whose device the last scan could not reach:
+   it is no longer offered in the device list. */
+.badge-offline {
+  border-color: var(--warn);
+  color: var(--warn);
 }
 
 /* ------------------------------------------------------------- pairing */

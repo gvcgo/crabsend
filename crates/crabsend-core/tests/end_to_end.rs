@@ -490,7 +490,7 @@ async fn https_transfers_a_file_and_reports_the_whole_session() {
                 Some(sender.fingerprint.as_str()),
                 "the announced peer must be the certificate it presented"
             );
-            assert_eq!(peer.address, IpAddr::V4(Ipv4Addr::LOCALHOST));
+            assert_eq!(peer.address.ip(), IpAddr::V4(Ipv4Addr::LOCALHOST));
         }
         _ => unreachable!("waited for Discovered"),
     }

@@ -58,6 +58,12 @@ pub fn unpair_device(state: State<'_, Arc<AppState>>, fingerprint: String) -> Re
     state.unpair(&fingerprint).map_err(report)
 }
 
+/// Drops one device from the list, stopping a pairing with it as well.
+#[tauri::command]
+pub fn forget_device(state: State<'_, Arc<AppState>>, fingerprint: String) -> Result<(), String> {
+    state.forget_device(&fingerprint).map_err(report)
+}
+
 /// Forgets every discovered peer.
 #[tauri::command]
 pub fn clear_devices(state: State<'_, Arc<AppState>>) {
@@ -78,6 +84,14 @@ pub async fn inspect_files(
     .await
     .map_err(|error| format!("inspecting the selection failed: {error}"))?
     .map_err(report)
+}
+
+/// Asks the user for a folder and describes the files it holds.
+///
+/// `None` means no folder was picked, and an empty list a folder without files.
+#[tauri::command]
+pub async fn pick_folder(app: tauri::AppHandle) -> Result<Option<Vec<SendFile>>, String> {
+    files::pick_folder(&app).await.map_err(report)
 }
 
 /// Starts sending files to a peer and returns the new session id.

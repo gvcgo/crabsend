@@ -96,6 +96,50 @@ async fn a_paired_device_that_comes_back_under_another_identity_is_offered_once(
     Ok(())
 }
 
+#[tokio::test]
+async fn a_device_that_is_only_seen_is_dropped_until_it_is_seen_again() -> Result<()> {
+    let peer_dir = tempfile::tempdir()?;
+    let peer = device(peer_dir.path(), "Peer").await?;
+    let peer_fingerprint = peer.snapshot().device.fingerprint.clone();
+    let peer_port = peer.snapshot().server.port;
+
+    let own_dir = tempfile::tempdir()?;
+    let own = device(own_dir.path(), "Own").await?;
+    own.add_device(&format!("127.0.0.1:{peer_port}")).await?;
+    assert!(
+        own.snapshot()
+            .devices
+            .iter()
+            .any(|device| device.fingerprint == peer_fingerprint),
+        "the device that answered is offered"
+    );
+
+    // The user drops it while it is still there and still answering.
+    own.forget_device(&peer_fingerprint)?;
+    assert!(
+        !own.snapshot()
+            .devices
+            .iter()
+            .any(|device| device.fingerprint == peer_fingerprint),
+        "the device the user dropped is still offered"
+    );
+
+    // A sighting is what was dropped, not the device: reaching it again — here
+    // by probing the address the user typed — offers it once more.
+    own.add_device(&format!("127.0.0.1:{peer_port}")).await?;
+    assert!(
+        own.snapshot()
+            .devices
+            .iter()
+            .any(|device| device.fingerprint == peer_fingerprint),
+        "a device that is seen again was not offered"
+    );
+
+    own.stop().await;
+    peer.stop().await;
+    Ok(())
+}
+
 /// Waits for the scan, which runs in the background and reports by state.
 async fn wait_for(mut done: impl FnMut() -> bool) -> bool {
     let deadline = Instant::now() + Duration::from_secs(90);
@@ -143,5 +187,61 @@ async fn a_scan_drops_a_device_that_stopped_answering() -> Result<()> {
     );
 
     own.stop().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_scan_drops_a_paired_device_that_stopped_answering() -> Result<()> {
+    let peer_dir = tempfile::tempdir()?;
+    let peer = device(peer_dir.path(), "Peer").await?;
+    let peer_fingerprint = peer.snapshot().device.fingerprint.clone();
+
+    let own_dir = tempfile::tempdir()?;
+    let own = device(own_dir.path(), "Own").await?;
+    let paired = own.pair_from_qr(&loopback_code(&peer).await?).await?;
+    assert_eq!(paired.fingerprint, peer_fingerprint);
+    assert!(paired.paired);
+
+    // The peer leaves: the pairing is a remembrance, not a sighting, so the
+    // device must stop being offered while the pairing itself stays.
+    peer.stop().await;
+    own.scan().await;
+    assert!(
+        wait_for(|| {
+            !own.snapshot()
+                .devices
+                .iter()
+                .any(|device| device.fingerprint == peer_fingerprint)
+        })
+        .await,
+        "the scan kept offering a paired device that stopped answering"
+    );
+    let listed = own.snapshot().paired_devices;
+    assert_eq!(listed.len(), 1, "the scan forgot the pairing");
+    assert_eq!(listed[0].online, Some(false));
+    assert_eq!(listed[0].fingerprint, peer_fingerprint);
+
+    // The peer answers again: the next scan offers it, still paired.
+    let peer = Arc::new(AppState::new_headless(peer_dir.path().to_path_buf())?);
+    peer.restart().await;
+    anyhow::ensure!(
+        peer.snapshot().server.running,
+        "the peer did not come back on its port"
+    );
+    own.scan().await;
+    assert!(
+        wait_for(|| {
+            own.snapshot()
+                .devices
+                .iter()
+                .any(|device| device.fingerprint == peer_fingerprint && device.paired)
+        })
+        .await,
+        "a paired device that answered again was not offered"
+    );
+    assert_eq!(own.snapshot().paired_devices[0].online, Some(true));
+
+    own.stop().await;
+    peer.stop().await;
     Ok(())
 }
