@@ -85,7 +85,7 @@ export function createTransfersView(): HTMLElement {
   const empty = el("p", { class: "empty", text: "No transfers yet." });
 
   const root = el("section", {
-    class: "card",
+    class: "card transfers-card",
     children: [
       el("div", {
         class: "card-head",

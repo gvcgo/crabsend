@@ -22,7 +22,7 @@ export function createHistoryView(): HTMLElement {
   });
 
   const root = el("section", {
-    class: "card",
+    class: "card history-card",
     children: [
       el("div", {
         class: "card-head",

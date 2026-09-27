@@ -91,6 +91,21 @@ scripts/build-arch.sh --no-build   # package the release binary that is already 
 The package installs `/usr/bin/crabsend`, a desktop entry and hicolor icons, and depends on
 `webkit2gtk-4.1`, `gtk3`, `libayatana-appindicator` and `librsvg`.
 
+### macOS
+
+```bash
+scripts/build-macos.sh             # universal (x86_64 + arm64) app, bundled as a dmg
+```
+
+It compiles and prints the dmg — under
+`target/universal-apple-darwin/release/bundle/dmg` — and installs nothing: the frontend
+dependencies have to be in place already (`pnpm install`). A universal build needs a rustup
+toolchain, since the Homebrew/MacPorts rust builds the host target only and cannot add
+`aarch64-apple-darwin`; when `rustup` is not on `PATH` the script uses the private toolchain in
+`$HOME/.cache/crabsend-universal-rust` (override with `CRABSEND_RUST_SANDBOX`), and its header
+carries the commands that create it. Missing std targets are the one thing it does install,
+before compiling.
+
 ### Android
 
 ```bash
